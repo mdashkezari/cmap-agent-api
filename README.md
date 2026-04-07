@@ -2,7 +2,7 @@
 
 [https://agent.simonscmap.ai/docs](https://agent.simonscmap.ai/docs)
 
-CMAP Agent is an agentic, retrieval-augmented interface for interacting with the \cmap\ harmonized ocean and atmospheric data system.
+CMAP Agent is an agentic, retrieval-augmented interface for interacting with the Simons CMAP harmonized ocean and atmospheric data system.
 The system enables users to express scientific intent in natural language and obtain verifiable results through a combination of
 (i) semantic retrieval over a knowledge base derived from \cmap\ catalog metadata and documentation,
 (ii) tool-based execution for dataset discovery, data subsetting, visualization, and dataset colocalization, and (iii) optional emission of reproducible analysis code in the CMAP software ecosystem.
