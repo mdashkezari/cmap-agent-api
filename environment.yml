@@ -1,0 +1,24 @@
+name: cmap-agent
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  # Geo stack (required)
+  - gdal
+  - proj
+  - geos
+  - cartopy
+  - pyproj
+  # Core scientific stack
+  - numpy
+  - pandas
+  - pyarrow
+  - matplotlib
+  # DB drivers
+  - unixodbc
+  - pyodbc
+  # Dev / interactive
+  - ipython
+  - pip
+  - pip:
+      - -e .

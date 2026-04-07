@@ -1,0 +1,6 @@
+from __future__ import annotations
+from typing import Any, Protocol
+
+class VectorStore(Protocol):
+    def upsert(self, ids: list[str], texts: list[str], metadatas: list[dict[str, Any]], embeddings: list[list[float]] | None = None) -> None: ...
+    def query(self, embedding: list[float], top_k: int = 10, where: dict[str, Any] | None = None) -> list[dict[str, Any]]: ...

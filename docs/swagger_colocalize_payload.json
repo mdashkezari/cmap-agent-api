@@ -1,0 +1,11 @@
+{
+  "user_id": 123,
+  "message": "Colocalize the source dataset with SST (tblSST_AVHRR_OI_NRT.sst)",
+  "llm": {
+    "provider": "openai",
+    "model": "gpt-4.1-mini"
+  },
+  "options": {
+    "max_tool_calls": 8
+  }
+}
