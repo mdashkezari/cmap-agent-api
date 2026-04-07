@@ -1,3 +1,5 @@
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19456049.svg)](https://doi.org/10.5281/zenodo.19456049)
+
 # CMAP Agent (Agentic RAG) 
 
 [https://agent.simonscmap.ai/docs](https://agent.simonscmap.ai/docs)
@@ -8,25 +10,25 @@ The system enables users to express scientific intent in natural language and ob
 (ii) tool-based execution for dataset discovery, data subsetting, visualization, and dataset colocalization, and (iii) optional emission of reproducible analysis code in the CMAP software ecosystem.
 
 The service supports:
-- Natural-language chat about **CMAP datasets / variables / coverage / references**
-- **Semantic search** over a local knowledge base (Chroma) built from CMAP catalog metadata + dataset references
+- Natural-language chat about CMAP datasets / variables / coverage / references
+- Semantic search over a local knowledge base (Chroma) built from CMAP catalog metadata + dataset references
 - Tool-calling to:
-  - retrieve **raw CMAP subsets** via **pycmap** (returns **Parquet** by default; optional CSV)
-  - generate **custom static plots** (PNG) including Cartopy maps
-  - (optional) **web search** for general science context
+  - retrieve raw CMAP subsets via `pycmap` (returns Parquet by default; optional CSV)
+  - generate custom static plots (PNG) including Cartopy maps
+  - (optional) web search for general science context
 
 It also:
 - Persists conversation history + tool traces in a SQL Server schema (`agent.*`)
-- Returns **optional reproducible pycmap code snippets** (when tools use pycmap) in the API response
+- Returns optional reproducible pycmap code snippets (when tools use pycmap) in the API response
   - set `options.return_code=true` in `/chat`
 
 
 On each user turn the server:
-1. **Retrieves** relevant context from the Chroma KB (datasets, variables, references)
-2. Injects that context into the system prompt as **primary context**
+1. Retrieves relevant context from the Chroma KB (datasets, variables, references)
+2. Injects that context into the system prompt as primary context
 3. Lets the agent decide whether to call tools (catalog lookup, data retrieval, plotting, web search)
 
-We can refresh the KB **on demand**:
+We can refresh the KB on demand:
 - `cmap-agent-sync-catalog`  (refresh cached catalog tables in SQL Server)
 - `cmap-agent-sync-kb`       (rebuild/update the Chroma KB from the cache)
 
@@ -83,7 +85,7 @@ export CMAP_AGENT_KB_COLLECTION="cmap_kb_v1"
 
 ### 4) Sync catalog cache + build the KB
 
-Catalog sync pulls **rich catalog metadata** using `pycmap.common.catalog_sql()` and then joins:
+Catalog sync pulls rich catalog metadata using `pycmap.common.catalog_sql()` and then joins:
 - authoritative coverage from `tblDataset_Stats`
 - references from `tblDataset_References`
 
@@ -152,9 +154,9 @@ Notes:
 ### Example (Swagger `/docs`)
 
 To run a multi-turn chat in Swagger:
-1) For the *first* request, **omit** `thread_id`.
+1) For the *first* request, omit `thread_id`.
 2) In the response, copy the returned `thread_id`.
-3) For follow-up requests, send the **same** `thread_id`.
+3) For follow-up requests, send the same `thread_id`.
 
 Example user message:
 
@@ -171,7 +173,7 @@ The agent will:
 ## Notes
 
 ### Returning raw data
-Data tools (`cmap.space_time`, `cmap.time_series`, `cmap.depth_profile`) return **raw subsets**, not aggregates, as Parquet by default.
+Data tools (`cmap.space_time`, `cmap.time_series`, `cmap.depth_profile`) return raw subsets, not aggregates, as Parquet by default.
 
 ### Returning pycmap code
 When the agent uses pycmap-based tools, the API can return a `code` string containing the corresponding pycmap snippets:
