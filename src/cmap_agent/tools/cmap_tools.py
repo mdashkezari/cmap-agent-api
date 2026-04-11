@@ -416,8 +416,8 @@ class TimeSeriesArgs(BaseModel):
     lat2: float
     lon1: float
     lon2: float
-    depth1: float = -10000.0
-    depth2: float = 10000.0
+    depth1: float = Field(0.0, description="Min depth (m). Defaults to 0 m when depth is not specified.")
+    depth2: float = Field(5.0, description="Max depth (m). Defaults to 5 m when depth is not specified.")
     interval: str | None = Field(
         None,
         description="Aggregation interval (e.g., 'month', 'week', 'day'). None returns native.",
@@ -920,6 +920,68 @@ def plot_timeseries(args: PlotTimeseriesArgs, ctx: dict) -> dict[str, Any]:
     return out
 
 
+def _fetch_dataset_meta_for_table(store, table: str) -> dict[str, Any] | None:
+    if store is None or not hasattr(store, "engine") or not table:
+        return None
+    with store.engine.begin() as conn:
+        row = conn.execute(
+            text(
+                """
+                SELECT TOP 1
+                    TableName,
+                    Description,
+                    TemporalResolution,
+                    SpatialResolution,
+                    TimeMin,
+                    TimeMax
+                FROM agent.CatalogDatasets
+                WHERE TableName = :t
+                """
+            ),
+            {"t": table},
+        ).mappings().first()
+    return dict(row) if row else None
+
+
+def _infer_temporal_window_days(meta: dict[str, Any] | None) -> int | None:
+    if not meta:
+        return None
+    blob = " ".join([
+        str(meta.get("TemporalResolution") or ""),
+        str(meta.get("Description") or ""),
+    ]).lower()
+    m = re.search(r"(\d+)\s*[- ]?day", blob)
+    if m:
+        try:
+            n = int(m.group(1))
+            return n if n > 1 else None
+        except Exception:
+            return None
+    m = re.search(r"(\d+)\s*[- ]?week", blob)
+    if m:
+        try:
+            n = int(m.group(1))
+            return n * 7 if n > 0 else None
+        except Exception:
+            return None
+    if "weekly" in blob:
+        return 7
+    return None
+
+
+def _expand_exact_date_window(dt1: str, dt2: str, window_days: int | None) -> tuple[str, str]:
+    if not window_days or window_days <= 1:
+        return dt1, dt2
+    s1 = str(dt1 or "")[:10]
+    s2 = str(dt2 or "")[:10]
+    if not s1 or s1 != s2:
+        return dt1, dt2
+    ts = pd.Timestamp(s1)
+    left = max(0, (window_days - 1) // 2)
+    right = max(0, (window_days - 1) - left)
+    return ((ts - pd.Timedelta(days=left)).date().isoformat(), (ts + pd.Timedelta(days=right)).date().isoformat())
+
+
 def plot_map(args: PlotMapArgs, ctx: dict) -> dict[str, Any]:
     # ------------------------------------------------------------
     # Artifact mode: plot an existing CSV/parquet dataframe
@@ -1062,6 +1124,8 @@ def plot_map(args: PlotMapArgs, ctx: dict) -> dict[str, Any]:
     table, variable, resolved = _resolve_table_variable_best_effort(store=store, table=str(args.table), variable=str(args.variable))
     _validate_table_variable(store=store, table=table, variable=variable)
 
+    meta = _fetch_dataset_meta_for_table(store, table)
+    eff_dt1, eff_dt2 = _expand_exact_date_window(str(args.dt1), str(args.dt2), _infer_temporal_window_days(meta))
     api = make_pycmap_api(ctx["cmap_api_key"], base_url=args.base_url)
 
     def _space_time_bbox(lat1: float, lat2: float, lon1: float, lon2: float):
@@ -1071,8 +1135,8 @@ def plot_map(args: PlotMapArgs, ctx: dict) -> dict[str, Any]:
             df1 = api.space_time(
                 table,
                 variable,
-                str(args.dt1),
-                str(args.dt2),
+                str(eff_dt1),
+                str(eff_dt2),
                 lat1,
                 lat2,
                 float(lon1),
@@ -1084,8 +1148,8 @@ def plot_map(args: PlotMapArgs, ctx: dict) -> dict[str, Any]:
             df2 = api.space_time(
                 table,
                 variable,
-                str(args.dt1),
-                str(args.dt2),
+                str(eff_dt1),
+                str(eff_dt2),
                 lat1,
                 lat2,
                 -180.0,
@@ -1099,8 +1163,8 @@ def plot_map(args: PlotMapArgs, ctx: dict) -> dict[str, Any]:
         return api.space_time(
             table,
             variable,
-            str(args.dt1),
-            str(args.dt2),
+            str(eff_dt1),
+            str(eff_dt2),
             lat1,
             lat2,
             lon1,
@@ -1111,6 +1175,22 @@ def plot_map(args: PlotMapArgs, ctx: dict) -> dict[str, Any]:
         )
 
     df = _space_time_bbox(float(args.lat1), float(args.lat2), float(args.lon1), float(args.lon2))
+    if df is None or df.empty:
+        raise ToolInputError(
+            "No data were returned for the requested map bounds and time window.",
+            code="empty_plot_data",
+            details={
+                "table": table,
+                "variable": variable,
+                "requested_dt1": str(args.dt1),
+                "requested_dt2": str(args.dt2),
+                "effective_dt1": str(eff_dt1),
+                "effective_dt2": str(eff_dt2),
+            },
+            suggestions={
+                "next": "Try a broader time window or confirm the dataset temporal resolution.",
+            },
+        )
 
     export = _export_df(
         df,
@@ -1162,14 +1242,16 @@ def plot_map(args: PlotMapArgs, ctx: dict) -> dict[str, Any]:
             f"api = pycmap.API(token=API_KEY, baseURL='{args.base_url}')\n"
             + (
                 (
-                    f"df1 = api.space_time('{table}','{variable}','{args.dt1}','{args.dt2}',{args.lat1},{args.lat2},{args.lon1},180.0,{args.depth1},{args.depth2})\n"
-                    f"df2 = api.space_time('{table}','{variable}','{args.dt1}','{args.dt2}',{args.lat1},{args.lat2},-180.0,{args.lon2},{args.depth1},{args.depth2})\n"
+                    f"df1 = api.space_time('{table}','{variable}','{eff_dt1}','{eff_dt2}',{args.lat1},{args.lat2},{args.lon1},180.0,{args.depth1},{args.depth2})\n"
+                    f"df2 = api.space_time('{table}','{variable}','{eff_dt1}','{eff_dt2}',{args.lat1},{args.lat2},-180.0,{args.lon2},{args.depth1},{args.depth2})\n"
                     "df = pd.concat([df1, df2], ignore_index=True)\n"
                 )
                 if (args.lon1 is not None and args.lon2 is not None and float(args.lon1) > float(args.lon2))
-                else f"df = api.space_time('{table}','{variable}','{args.dt1}','{args.dt2}',{args.lat1},{args.lat2},{args.lon1},{args.lon2},{args.depth1},{args.depth2})\n"
+                else f"df = api.space_time('{table}','{variable}','{eff_dt1}','{eff_dt2}',{args.lat1},{args.lat2},{args.lon1},{args.lon2},{args.depth1},{args.depth2})\n"
             )
         ),
+        "effective_dt1": str(eff_dt1),
+        "effective_dt2": str(eff_dt2),
     }
 
     if resolved and resolved.get('original') != resolved.get('resolved'):

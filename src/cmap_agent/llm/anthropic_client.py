@@ -26,7 +26,7 @@ class AnthropicClient(LLMClient):
             system=system.strip() or None,
             messages=msgs,
             max_tokens=1200,
-            temperature=0.2,
+            temperature=0.0,
         )
         text = ""
         for block in resp.content:

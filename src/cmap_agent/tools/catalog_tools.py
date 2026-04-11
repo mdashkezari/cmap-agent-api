@@ -246,7 +246,15 @@ def catalog_search(args: CatalogSearchArgs, ctx: dict) -> dict:
             Make AS [make],
             Sensor AS [sensor],
             Description AS [description],
-            Keywords AS [keywords]
+            Keywords AS [keywords],
+            TimeMin AS time_min,
+            TimeMax AS time_max,
+            LatMin AS lat_min,
+            LatMax AS lat_max,
+            LonMin AS lon_min,
+            LonMax AS lon_max,
+            SpatialResolution AS spatial_resolution,
+            TemporalResolution AS temporal_resolution
         FROM agent.CatalogDatasets
         WHERE {where_sql}
         ORDER BY
@@ -281,7 +289,15 @@ def catalog_search(args: CatalogSearchArgs, ctx: dict) -> dict:
                     Make AS [make],
                     Sensor AS [sensor],
                     Description AS [description],
-                    Keywords AS [keywords]
+                    Keywords AS [keywords],
+                    TimeMin AS time_min,
+                    TimeMax AS time_max,
+                    LatMin AS lat_min,
+                    LatMax AS lat_max,
+                    LonMin AS lon_min,
+                    LonMax AS lon_max,
+                    SpatialResolution AS spatial_resolution,
+                    TemporalResolution AS temporal_resolution
                 FROM agent.CatalogDatasets
                 WHERE {where_or}
                 ORDER BY
@@ -322,6 +338,14 @@ def catalog_search(args: CatalogSearchArgs, ctx: dict) -> dict:
                 "sensor": r.get("sensor"),
                 "description": (r.get("description") or "")[:400],
                 "reason": _reason(table, name, title),
+                "time_min": r.get("time_min"),
+                "time_max": r.get("time_max"),
+                "lat_min": r.get("lat_min"),
+                "lat_max": r.get("lat_max"),
+                "lon_min": r.get("lon_min"),
+                "lon_max": r.get("lon_max"),
+                "spatial_resolution": r.get("spatial_resolution"),
+                "temporal_resolution": r.get("temporal_resolution"),
             }
         )
 
@@ -555,10 +579,14 @@ def catalog_search_roi(args: CatalogSearchROIArgs, ctx: dict) -> dict:
             Description AS [description],
             Make AS [make],
             Sensor AS [sensor],
+            TimeMin AS time_min,
+            TimeMax AS time_max,
             LatMin AS lat_min,
             LatMax AS lat_max,
             LonMin AS lon_min,
-            LonMax AS lon_max
+            LonMax AS lon_max,
+            SpatialResolution AS spatial_resolution,
+            TemporalResolution AS temporal_resolution
         FROM agent.CatalogDatasets
         """
     )
@@ -687,6 +715,8 @@ class CatalogSearchKBFArgs(BaseModel):
     lat2: Optional[float] = Field(None, description="Optional ROI northern latitude.")
     lon1: Optional[float] = Field(None, description="Optional ROI western longitude.")
     lon2: Optional[float] = Field(None, description="Optional ROI eastern longitude.")
+    dt1: Optional[str] = Field(None, description="Optional start date/time context from the user request.")
+    dt2: Optional[str] = Field(None, description="Optional end date/time context from the user request.")
     make: Optional[str] = Field(None, description="Optional dataset Make filter.")
     sensor: Optional[str] = Field(None, description="Optional dataset Sensor filter.")
     roi_rank_mode: Literal["mixed", "overlap_area", "bbox_area"] = Field(
@@ -718,6 +748,118 @@ def _infer_make_sensor_from_query(q: str) -> tuple[Optional[str], Optional[str]]
     return make, sensor
 
 
+
+
+def _field_family_from_query(q: str) -> str | None:
+    s = (q or "").lower()
+    fams = {
+        "chlorophyll": ["chlorophyll", "chlor_a", "chl", "chla"],
+        "nitrate": ["nitrate", "no3"],
+        "nitrite": ["nitrite", "no2"],
+        "phosphate": ["phosphate", "po4"],
+        "silicate": ["silicate", "silicic", "si"],
+        "oxygen": ["oxygen", "o2", "dissolved oxygen"],
+        "salinity": ["salinity", "sss"],
+        "sst": ["sst", "sea surface temperature", "temperature"],
+        "wind": ["wind", "stress"],
+        "precipitation": ["precip", "precipitation", "rain", "rainfall", "tp"],
+    }
+    for fam, terms in fams.items():
+        if any(t in s for t in terms):
+            return fam
+    return None
+
+
+def _candidate_blob(r: dict[str, Any]) -> str:
+    return " ".join([
+        str(r.get("table") or ""),
+        str(r.get("name") or ""),
+        str(r.get("title") or ""),
+        str(r.get("description") or ""),
+        " ".join([str(v) for v in (r.get("matched_variables") or [])]),
+    ]).lower()
+
+
+def _field_match_score(r: dict[str, Any], family: str | None) -> float:
+    if not family:
+        return 0.0
+    blob = _candidate_blob(r)
+    terms = {
+        "chlorophyll": ["chlorophyll", "chlor_a", "chl", "chla"],
+        "nitrate": ["nitrate", "no3"],
+        "nitrite": ["nitrite", "no2"],
+        "phosphate": ["phosphate", "po4"],
+        "silicate": ["silicate", "silicic", "si"],
+        "oxygen": ["oxygen", "o2"],
+        "salinity": ["salinity", "sss"],
+        "sst": ["sea surface temperature", "sst", "temperature"],
+        "wind": ["wind", "stress"],
+        "precipitation": ["precipitation", "precip", "rain", "rainfall", "tp"],
+    }.get(family, [family])
+    score = 0.0
+    for t in terms:
+        if t in blob:
+            score += 1.0
+    return score
+
+
+def _looks_point_like(r: dict[str, Any]) -> bool:
+    blob = _candidate_blob(r)
+    terms = ["cruise", "mission", "dives", "dive", "glider", "tara", "flow cytometry", "bottle", "ctd", "station", "transect"]
+    return any(t in blob for t in terms)
+
+
+def _looks_map_friendly(r: dict[str, Any]) -> bool:
+    blob = _candidate_blob(r)
+    good = ["gridded", "grid", "global", "resolution", "forecast", "reanalysis", "analysis", "daily", "8 day", "weekly", "monthly", "satellite"]
+    return any(t in blob for t in good) and not _looks_point_like(r)
+
+
+def _parse_date_safe(s: Any) -> str | None:
+    s = str(s or "").strip()
+    if not s:
+        return None
+    m = re.match(r"(\d{4}-\d{2}-\d{2})", s)
+    return m.group(1) if m else None
+
+
+def _time_score_for_request(r: dict[str, Any], dt1: Any, dt2: Any) -> float:
+    q1 = _parse_date_safe(dt1)
+    q2 = _parse_date_safe(dt2) or q1
+    if not q1:
+        return 0.0
+    t1 = _parse_date_safe(r.get("time_min") or r.get("TimeMin"))
+    t2 = _parse_date_safe(r.get("time_max") or r.get("TimeMax"))
+    if not t1 or not t2:
+        return 0.0
+    if t1 <= q1 <= t2 and t1 <= q2 <= t2:
+        return 1.0
+    return -1.0
+
+
+def _post_rank_catalog_results(results: list[dict[str, Any]], *, query: str, dt1: Any = None, dt2: Any = None) -> list[dict[str, Any]]:
+    family = _field_family_from_query(query)
+    ql = (query or "").lower()
+    wants_satellite = "satellite" in ql
+    wants_map = any(t in ql for t in ["map", "plot", "gridded", "surface"])
+
+    def score(r: dict[str, Any]) -> tuple[float, float]:
+        s = float(r.get("kb_score") or 0.0) * 2.0
+        s += _field_match_score(r, family) * 1.2
+        if wants_satellite and str(r.get("sensor") or "").lower().startswith("satellite"):
+            s += 1.2
+        if wants_map and _looks_map_friendly(r):
+            s += 1.0
+        if _looks_point_like(r):
+            s -= 2.0
+        s += _time_score_for_request(r, dt1, dt2) * 1.25
+        blob = _candidate_blob(r)
+        if family and "climatology" in blob and dt1:
+            s -= 0.6
+        return (-s, str(r.get("table") or ""))
+
+    return sorted(results or [], key=score)
+
 def _fetch_datasets_by_tables(store: SQLServerStore, tables: list[str]) -> list[dict[str, Any]]:
     if not tables:
         return []
@@ -734,10 +876,14 @@ def _fetch_datasets_by_tables(store: SQLServerStore, tables: list[str]) -> list[
             Description AS [description],
             Make AS [make],
             Sensor AS [sensor],
+            TimeMin AS time_min,
+            TimeMax AS time_max,
             LatMin AS lat_min,
             LatMax AS lat_max,
             LonMin AS lon_min,
-            LonMax AS lon_max
+            LonMax AS lon_max,
+            SpatialResolution AS spatial_resolution,
+            TemporalResolution AS temporal_resolution
         FROM agent.CatalogDatasets
         WHERE TableName IN ({in_clause})
         """
@@ -881,7 +1027,7 @@ def catalog_search_kb_first(args: CatalogSearchKBFArgs, ctx: dict) -> dict:
             if alternates:
                 alternates = alternates[: max(0, int(args.limit) - 1)]
         return {
-            "query": {"q": q, "lat1": args.lat1, "lat2": args.lat2, "lon1": args.lon1, "lon2": args.lon2, "make": make, "sensor": sensor, "limit": args.limit},
+            "query": {"q": q, "lat1": args.lat1, "lat2": args.lat2, "lon1": args.lon1, "lon2": args.lon2, "dt1": args.dt1, "dt2": args.dt2, "make": make, "sensor": sensor, "limit": args.limit},
             "mode": "sql_fallback",
             "selected": selected,
             "alternates": alternates,
@@ -962,13 +1108,17 @@ def catalog_search_kb_first(args: CatalogSearchKBFArgs, ctx: dict) -> dict:
 
             roi_rows.sort(key=_rank_row)
             results = roi_rows[: args.limit]
+            selected = results[0] if results else None
+            alternates = results[1:6] if len(results) > 1 else []
             return {
                 "tool": "catalog.search_kb_first",
-                "query": q,
+                "query": {"q": q, "roi": {"lat1": args.lat1, "lat2": args.lat2, "lon1": args.lon1, "lon2": args.lon2}, "dt1": args.dt1, "dt2": args.dt2, "make": make, "sensor": sensor},
                 "make": make,
                 "sensor": sensor,
                 "kb_error": kb_error,
                 "kb_hits": [],
+                "selected": selected,
+                "alternates": alternates,
                 "results": results,
                 "total_returned": len(results),
                 "mode": "roi_semantic_fallback",
@@ -1113,6 +1263,7 @@ def catalog_search_kb_first(args: CatalogSearchKBFArgs, ctx: dict) -> dict:
         except Exception:
             pass
 
+    results = _post_rank_catalog_results(results, query=q, dt1=args.dt1, dt2=args.dt2)
     results = results[: args.limit]
     selected = results[0] if results else None
     alternates = results[1:6] if len(results) > 1 else []
@@ -1123,6 +1274,8 @@ def catalog_search_kb_first(args: CatalogSearchKBFArgs, ctx: dict) -> dict:
             "roi": (
                 {"lat1": args.lat1, "lat2": args.lat2, "lon1": args.lon1, "lon2": args.lon2} if use_roi else None
             ),
+            "dt1": args.dt1,
+            "dt2": args.dt2,
             "make": make,
             "sensor": sensor,
         },

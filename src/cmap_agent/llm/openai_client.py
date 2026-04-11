@@ -20,7 +20,7 @@ class OpenAIClient(LLMClient):
         payload = dict(
             model=self.model,
             messages=[m.model_dump() for m in messages],
-            temperature=0.2,
+            temperature=0.0,
         )
 
         if self._json_mode_supported:
