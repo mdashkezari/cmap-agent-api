@@ -19,9 +19,9 @@ from cmap_agent.tools.pycmap_safe import make_pycmap_api
 from cmap_agent.tools.limits import LIMITS
 from cmap_agent.tools import viz
 from cmap_agent.tools.catalog_tools import (
-    _tokenize,
-    _expand_tokens,
-    _build_token_where,
+    _catalog_cache,
+    _search_rows,
+    _contains,
     catalog_search_variables,
     CatalogSearchVariablesArgs,
     catalog_search,
@@ -53,15 +53,11 @@ def _publish_file(
 
 
 def _validate_table_variable(*, store, table: str, variable: str) -> None:
-    """Validate that (table, variable) exist in the cached catalog.
+    """Validate that (table, variable) exist in the in-memory catalog cache.
 
-    This avoids pycmap's occasional sys.exit() behavior on invalid inputs and
-    returns a structured error payload the agent can use to recover.
-
-    Notes:
-    - If the catalog variable cache is unavailable/unpopulated, we skip variable validation.
+    Uses the udfCatalog-backed cache — no SQL round trips needed.
+    Falls back gracefully if the cache is empty.
     """
-
     table = (table or "").strip()
     variable = (variable or "").strip()
     if not table:
@@ -69,126 +65,74 @@ def _validate_table_variable(*, store, table: str, variable: str) -> None:
     if not variable:
         raise ToolInputError("Missing required field: variable", code="missing_variable")
 
-    # Some contexts may not provide a SQL store (e.g., standalone usage).
-    if store is None or not hasattr(store, "engine"):
+    # Ensure cache is loaded (uses store for initial load if needed)
+    if store is not None and hasattr(store, "engine"):
+        _catalog_cache.ensure_loaded(store)
+
+    if not _catalog_cache.rows:
+        # Cache unavailable — skip validation rather than fail
         return
 
-    with store.engine.begin() as conn:
-        ds = conn.execute(
-            text(
-                """
-                SELECT TOP 1 TableName, ShortName, DatasetName
-                FROM agent.CatalogDatasets
-                WHERE TableName = :t
-                """
-            ),
-            {"t": table},
-        ).mappings().first()
+    ql_table = table.lower()
+    cache_rows = _catalog_cache.rows
 
-        if not ds:
-            # Suggest datasets using a tokenized search on the table hint.
-            fields = ["TableName", "ShortName", "DatasetName", "Description", "Keywords"]
-            tokens = _expand_tokens(_tokenize(table))
-            where_and, params = _build_token_where(tokens=tokens, fields=fields, param_prefix="s")
-            like_full = f"%{table}%"
-
-            where_sql = (
-                f"({where_and})"
-                if where_and
-                else "(" + " OR ".join([f"{f} LIKE :like_full" for f in fields]) + ")"
-            )
-
-            rows = conn.execute(
-                text(
-                    f"""
-                    SELECT TOP 5 TableName, ShortName, DatasetName
-                    FROM agent.CatalogDatasets
-                    WHERE {where_sql}
-                    ORDER BY UpdatedAt DESC
-                    """
-                ),
-                {"like_full": like_full, **params},
-            ).mappings().all()
-            suggestions = [
-                {
-                    "table": r.get("TableName"),
-                    "short_name": r.get("ShortName"),
-                    "title": r.get("DatasetName"),
-                }
-                for r in (rows or [])
-            ]
-
-            raise ToolInputError(
-                f"Unknown dataset table '{table}'.",
-                code="unknown_table",
-                details={"table": table},
-                suggestions={
-                    "datasets": suggestions,
-                    "next": "Call catalog.search or catalog.dataset_summary to pick the right dataset table.",
-                },
-            )
-
-        # Variable cache may not be populated everywhere; treat that as non-fatal.
-        try:
-            var_row = conn.execute(
-                text(
-                    """
-                    SELECT TOP 1 VarName, LongName, Unit
-                    FROM agent.CatalogVariables
-                    WHERE TableName = :t AND VarName = :v
-                    """
-                ),
-                {"t": table, "v": variable},
-            ).mappings().first()
-        except Exception:
-            return
-
-        if var_row:
-            return
-
-        # Suggest variables within this table.
-        vq = variable
-        like_v = f"%{vq}%"
-        v_fields = ["VarName", "LongName", "Unit"]
-        v_tokens = _expand_tokens(_tokenize(vq))
-        v_where_and, v_params = _build_token_where(tokens=v_tokens, fields=v_fields, param_prefix="v")
-
-        def _fetch_var_suggestions(where_sql: str, extra_params: dict[str, str]):
-            rows = conn.execute(
-                text(
-                    f"""
-                    SELECT TOP 15 VarName, LongName, Unit
-                    FROM agent.CatalogVariables
-                    WHERE TableName = :t AND ({where_sql})
-                    ORDER BY VarName
-                    """
-                ),
-                {"t": table, "like_v": like_v, **extra_params},
-            ).mappings().all()
-            return [
-                {"variable": r.get("VarName"), "long_name": r.get("LongName"), "unit": r.get("Unit")}
-                for r in (rows or [])
-            ]
-
-        if v_where_and:
-            matches = _fetch_var_suggestions(v_where_and, v_params)
-            if not matches:
-                where_or = " OR ".join([f"{f} LIKE :like_v" for f in v_fields])
-                matches = _fetch_var_suggestions(where_or, {})
-        else:
-            where_or = " OR ".join([f"{f} LIKE :like_v" for f in v_fields])
-            matches = _fetch_var_suggestions(where_or, {})
-
+    # Check table exists
+    table_rows = [r for r in cache_rows if str(r.get("table_name") or "").strip().lower() == ql_table]
+    if not table_rows:
+        # Suggest datasets via cache search
+        matched = _search_rows(cache_rows, table)
+        seen: set[str] = set()
+        suggestions = []
+        for r in matched[:5]:
+            t = str(r.get("table_name") or "")
+            if t and t not in seen:
+                seen.add(t)
+                suggestions.append({
+                    "table": t,
+                    "short_name": r.get("dataset_short_name"),
+                    "title": r.get("dataset_name"),
+                })
         raise ToolInputError(
-            f"Unknown variable '{variable}' for table '{table}'.",
-            code="unknown_variable",
-            details={"table": table, "variable": variable, "dataset_title": ds.get("DatasetName")},
+            f"Unknown dataset table '{table}'.",
+            code="unknown_table",
+            details={"table": table},
             suggestions={
-                "table": table,
-                "variable_matches": matches,
-                "next": "Call catalog.search_variables (recommended) or catalog.list_variables to resolve the correct variable name.",
+                "datasets": suggestions,
+                "next": "Call catalog.search or catalog.dataset_summary to pick the right dataset table.",
             },
         )
+
+    # Check variable exists in this table
+    ql_var = variable.lower()
+    var_rows = [
+        r for r in table_rows
+        if str(r.get("variable") or "").lower() == ql_var
+    ]
+    if var_rows:
+        return  # exact match — valid
+
+    # Variable not found — suggest close matches within this table
+    matches = [
+        {
+            "variable": r.get("variable"),
+            "long_name": r.get("long_name"),
+            "unit": r.get("unit"),
+        }
+        for r in table_rows
+        if _contains(r.get("variable"), ql_var) or _contains(r.get("long_name"), ql_var)
+    ][:15]
+
+    ds_title = table_rows[0].get("dataset_name") if table_rows else None
+    raise ToolInputError(
+        f"Unknown variable '{variable}' for table '{table}'.",
+        code="unknown_variable",
+        details={"table": table, "variable": variable, "dataset_title": ds_title},
+        suggestions={
+            "table": table,
+            "variable_matches": matches,
+            "next": "Call catalog.search_variables (recommended) or catalog.list_variables to resolve the correct variable name.",
+        },
+    )
 
 
 def _norm_name(s: str | None) -> str:
@@ -261,16 +205,29 @@ def _validate_climatology_period_value(period: str, value: int) -> None:
         raise ToolInputError("dayofyear period_value must be 1..366", code="invalid_period_value")
 
 
-def _resolve_table_variable_best_effort(*, store, table: str, variable: str) -> tuple[str, str, dict | None]:
+# Minimum similarity score required before a fuzzy variable match is accepted.
+# Raised from the original 0.70 to reduce the risk of silently substituting a
+# chemically distinct variable (e.g. no2 in place of no3).
+_FUZZY_MATCH_THRESHOLD = 0.85
+
+
+def _resolve_table_variable_best_effort(
+    *,
+    store,
+    table: str,
+    variable: str,
+    confirmed_table: str | None = None,
+) -> tuple[str, str, dict | None]:
     """Best-effort resolution of (table, variable).
 
-    Why this exists:
-    - LLMs sometimes guess table names (e.g., "tblPrecipitation_Global").
-    - Users often specify variables in different casing/snake_case.
+    When ``confirmed_table`` is supplied (from ThreadState), the global variable
+    search path is skipped — only case-normalization and within-table fuzzy
+    matching are attempted.  This prevents cross-dataset substitution after the
+    user has explicitly confirmed a dataset.
 
-    This resolver uses the cached SQL catalog to:
-      1) resolve a missing/unknown table by searching variables globally
-      2) resolve a variable within a known table using case-insensitive + fuzzy matching
+    When a substitution is made the returned dict carries a
+    ``substitution_warning`` key that callers should surface in the final
+    response.
 
     Returns (resolved_table, resolved_variable, resolved_block_or_None).
     """
@@ -287,108 +244,107 @@ def _resolve_table_variable_best_effort(*, store, table: str, variable: str) -> 
         "candidates": [],
     }
 
-    with store.engine.begin() as conn:
-        # ---- Table existence (case-insensitive) ----
-        ds = conn.execute(
-            text(
-                """
-                SELECT TOP 1 TableName
-                FROM agent.CatalogDatasets
-                WHERE TableName = :t OR LOWER(TableName) = LOWER(:t)
-                """
-            ),
-            {"t": table_in},
-        ).mappings().first()
+    # Ensure cache loaded
+    if store is not None and hasattr(store, "engine"):
+        _catalog_cache.ensure_loaded(store)
 
-        if not ds:
-            # Unknown table: try resolving via global variable search.
-            q = _norm_name(var_in) or _norm_name(table_in)
-            if q:
-                var_res = catalog_search_variables(
-                    CatalogSearchVariablesArgs(query=q, table_hint=None, limit=25),
-                    {"store": store},
-                )
-                cand = list(var_res.get("results") or [])
-                best, score = _pick_best_variable_match(var_in or q, cand)
-                # Keep a few candidates for transparency/debugging
-                resolved["candidates"] = [
-                    {
-                        "table": c.get("table"),
-                        "variable": c.get("variable"),
-                        "long_name": c.get("long_name"),
-                        "unit": c.get("unit"),
-                    }
-                    for c in cand[:8]
-                ]
-                if best and score >= 0.70:
-                    table_out = str(best.get("table") or table_in)
-                    var_out = str(best.get("variable") or var_in)
-                    resolved["resolved"] = {"table": table_out, "variable": var_out}
-                    resolved["confidence"] = float(score)
-                    return table_out, var_out, resolved
+    cache_rows = _catalog_cache.rows
 
-            # As a last resort, suggest datasets via metadata search (helps the LLM recover).
-            q2 = _norm_name(var_in) or _norm_name(table_in)
-            ds_res = catalog_search(CatalogSearchArgs(query=q2, limit=10), {"store": store}) if q2 else {"results": []}
-            resolved["candidates"] = list(ds_res.get("results") or [])[:8]
-            return table_in, var_in, resolved
+    # ---- Table existence (case-insensitive) ----
+    ql_table = table_in.lower()
+    table_rows = [r for r in cache_rows if str(r.get("table_name") or "").strip().lower() == ql_table]
 
-        table_out = str(ds.get("TableName") or table_in)
+    # Resolve exact table name (cache stores canonical casing)
+    table_out = str(table_rows[0].get("table_name") or table_in) if table_rows else table_in
 
-        # ---- Variable resolution within table (case-insensitive and long name) ----
-        # 1) direct / case-insensitive VarName or LongName
-        try:
-            vr = conn.execute(
-                text(
-                    """
-                    SELECT TOP 1 VarName, LongName
-                    FROM agent.CatalogVariables
-                    WHERE TableName = :t
-                      AND (
-                        VarName = :v OR LongName = :v OR
-                        LOWER(VarName) = LOWER(:v) OR LOWER(LongName) = LOWER(:v)
-                      )
-                    """
-                ),
-                {"t": table_out, "v": var_in},
-            ).mappings().first()
-        except Exception:
-            vr = None
+    if not table_rows:
+        # When a table has been confirmed by the user, revert to it.
+        if confirmed_table:
+            resolved["resolved"] = {"table": confirmed_table, "variable": var_in}
+            resolved["substitution_warning"] = (
+                f"Dataset table '{table_in}' was not found; "
+                f"reverting to confirmed table '{confirmed_table}'."
+            )
+            return confirmed_table, var_in, resolved
 
-        if vr:
-            var_out = str(vr.get("VarName") or var_in)
-            resolved["resolved"] = {"table": table_out, "variable": var_out}
-            resolved["confidence"] = 1.0
-            return table_out, var_out, resolved
+        # Unknown table: try resolving via global variable search.
+        q = _norm_name(var_in) or _norm_name(table_in)
+        if q:
+            var_res = catalog_search_variables(
+                CatalogSearchVariablesArgs(query=q, table_hint=None, limit=25),
+                {"store": store},
+            )
+            cand = list(var_res.get("results") or [])
+            best, score = _pick_best_variable_match(var_in or q, cand)
+            resolved["candidates"] = [
+                {"table": c.get("table"), "variable": c.get("variable"),
+                 "long_name": c.get("long_name"), "unit": c.get("unit")}
+                for c in cand[:8]
+            ]
+            if best and score >= _FUZZY_MATCH_THRESHOLD:
+                table_out2 = str(best.get("table") or table_in)
+                var_out2 = str(best.get("variable") or var_in)
+                resolved["resolved"] = {"table": table_out2, "variable": var_out2}
+                resolved["confidence"] = float(score)
+                if table_out2 != table_in or var_out2 != var_in:
+                    resolved["substitution_warning"] = (
+                        f"Table '{table_in}' / variable '{var_in}' were not found; "
+                        f"resolved to '{table_out2}' / '{var_out2}' "
+                        f"(similarity {score:.2f})."
+                    )
+                return table_out2, var_out2, resolved
 
-        # 2) fuzzy within-table search
-        qv = _norm_name(var_in)
-        var_res2 = catalog_search_variables(
-            CatalogSearchVariablesArgs(query=qv or var_in, table_hint=table_out, limit=40),
-            {"store": store},
-        )
-        cand2 = list(var_res2.get("results") or [])
-        best2, score2 = _pick_best_variable_match(var_in or qv, cand2)
-        resolved["candidates"] = [
-            {
-                "table": c.get("table"),
-                "variable": c.get("variable"),
-                "long_name": c.get("long_name"),
-                "unit": c.get("unit"),
-            }
-            for c in cand2[:10]
-        ]
+        # Last resort: suggest datasets via metadata search
+        q2 = _norm_name(var_in) or _norm_name(table_in)
+        ds_res = catalog_search(CatalogSearchArgs(query=q2, limit=10), {"store": store}) if q2 else {"results": []}
+        resolved["candidates"] = list(ds_res.get("results") or [])[:8]
+        return table_in, var_in, resolved
 
-        if best2 and score2 >= 0.70:
-            var_out = str(best2.get("variable") or var_in)
-            resolved["resolved"] = {"table": table_out, "variable": var_out}
-            resolved["confidence"] = float(score2)
-            return table_out, var_out, resolved
+    # ---- Variable resolution within table (case-insensitive) ----
+    ql_var = var_in.lower()
 
-        # No confident match; return originals but include candidates for downstream error reporting.
-        resolved["resolved"] = {"table": table_out, "variable": var_in}
-        resolved["confidence"] = float(score2 or 0.0)
-        return table_out, var_in, resolved
+    # 1) Exact / case-insensitive match on variable name or long name
+    exact = next(
+        (r for r in table_rows
+         if str(r.get("variable") or "").lower() == ql_var
+         or str(r.get("long_name") or "").lower() == ql_var),
+        None
+    )
+    if exact:
+        var_out = str(exact.get("variable") or var_in)
+        resolved["resolved"] = {"table": table_out, "variable": var_out}
+        resolved["confidence"] = 1.0
+        return table_out, var_out, resolved
+
+    # 2) Fuzzy within-table search via catalog_search_variables (cache-backed)
+    qv = _norm_name(var_in)
+    var_res2 = catalog_search_variables(
+        CatalogSearchVariablesArgs(query=qv or var_in, table_hint=table_out, limit=40),
+        {"store": store},
+    )
+    cand2 = list(var_res2.get("results") or [])
+    best2, score2 = _pick_best_variable_match(var_in or qv, cand2)
+    resolved["candidates"] = [
+        {"table": c.get("table"), "variable": c.get("variable"),
+         "long_name": c.get("long_name"), "unit": c.get("unit")}
+        for c in cand2[:10]
+    ]
+
+    if best2 and score2 >= _FUZZY_MATCH_THRESHOLD:
+        var_out = str(best2.get("variable") or var_in)
+        resolved["resolved"] = {"table": table_out, "variable": var_out}
+        resolved["confidence"] = float(score2)
+        if var_out != var_in:
+            resolved["substitution_warning"] = (
+                f"Variable '{var_in}' was not found in '{table_out}'; "
+                f"resolved to '{var_out}' (similarity {score2:.2f})."
+            )
+        return table_out, var_out, resolved
+
+    # No confident match
+    resolved["resolved"] = {"table": table_out, "variable": var_in}
+    resolved["confidence"] = float(score2 or 0.0)
+    return table_out, var_in, resolved
 
 
 class SpaceTimeArgs(BaseModel):
@@ -647,7 +603,7 @@ def _export_df(df: pd.DataFrame, thread_id: str, prefix: str, fmt: str) -> dict[
 
 def cmap_space_time(args: SpaceTimeArgs, ctx: dict) -> dict[str, Any]:
     store = ctx.get("store")
-    table, variable, resolved = _resolve_table_variable_best_effort(store=store, table=args.table, variable=args.variable)
+    table, variable, resolved = _resolve_table_variable_best_effort(store=store, table=args.table, variable=args.variable, confirmed_table=ctx.get("confirmed_table"))
     _validate_table_variable(store=store, table=table, variable=variable)
     api = make_pycmap_api(ctx["cmap_api_key"], base_url=args.base_url)
     df = api.space_time(
@@ -676,12 +632,14 @@ def cmap_space_time(args: SpaceTimeArgs, ctx: dict) -> dict[str, Any]:
     )
     if resolved and resolved.get('original') != resolved.get('resolved'):
         export['resolved'] = resolved
+    if resolved and resolved.get('substitution_warning'):
+        export['substitution_warning'] = resolved['substitution_warning']
     return export
 
 
 def cmap_time_series(args: TimeSeriesArgs, ctx: dict) -> dict[str, Any]:
     store = ctx.get("store")
-    table, variable, resolved = _resolve_table_variable_best_effort(store=store, table=args.table, variable=args.variable)
+    table, variable, resolved = _resolve_table_variable_best_effort(store=store, table=args.table, variable=args.variable, confirmed_table=ctx.get("confirmed_table"))
     _validate_table_variable(store=store, table=table, variable=variable)
     api = make_pycmap_api(ctx["cmap_api_key"], base_url=args.base_url)
     df = api.time_series(
@@ -711,12 +669,14 @@ def cmap_time_series(args: TimeSeriesArgs, ctx: dict) -> dict[str, Any]:
     )
     if resolved and resolved.get('original') != resolved.get('resolved'):
         export['resolved'] = resolved
+    if resolved and resolved.get('substitution_warning'):
+        export['substitution_warning'] = resolved['substitution_warning']
     return export
 
 
 def cmap_depth_profile(args: DepthProfileArgs, ctx: dict) -> dict[str, Any]:
     store = ctx.get("store")
-    table, variable, resolved = _resolve_table_variable_best_effort(store=store, table=args.table, variable=args.variable)
+    table, variable, resolved = _resolve_table_variable_best_effort(store=store, table=args.table, variable=args.variable, confirmed_table=ctx.get("confirmed_table"))
     _validate_table_variable(store=store, table=table, variable=variable)
     api = make_pycmap_api(ctx["cmap_api_key"], base_url=args.base_url)
     df = api.depth_profile(
@@ -743,6 +703,8 @@ def cmap_depth_profile(args: DepthProfileArgs, ctx: dict) -> dict[str, Any]:
     )
     if resolved and resolved.get('original') != resolved.get('resolved'):
         export['resolved'] = resolved
+    if resolved and resolved.get('substitution_warning'):
+        export['substitution_warning'] = resolved['substitution_warning']
     return export
 
 
@@ -756,7 +718,7 @@ def cmap_climatology(args: ClimatologyArgs, ctx: dict) -> dict[str, Any]:
     """
 
     store = ctx.get("store")
-    table, variable, resolved = _resolve_table_variable_best_effort(store=store, table=args.table, variable=args.variable)
+    table, variable, resolved = _resolve_table_variable_best_effort(store=store, table=args.table, variable=args.variable, confirmed_table=ctx.get("confirmed_table"))
     _validate_table_variable(store=store, table=table, variable=variable)
 
     api = make_pycmap_api(ctx["cmap_api_key"], base_url=args.base_url)
@@ -858,12 +820,14 @@ def cmap_climatology(args: ClimatologyArgs, ctx: dict) -> dict[str, Any]:
     export["climatology"] = {"period": clim_period, "period_value": int(args.period_value)}
     if resolved and resolved.get('original') != resolved.get('resolved'):
         export['resolved'] = resolved
+    if resolved and resolved.get('substitution_warning'):
+        export['substitution_warning'] = resolved['substitution_warning']
     return export
 
 
 def plot_timeseries(args: PlotTimeseriesArgs, ctx: dict) -> dict[str, Any]:
     store = ctx.get("store")
-    table, variable, resolved = _resolve_table_variable_best_effort(store=store, table=args.table, variable=args.variable)
+    table, variable, resolved = _resolve_table_variable_best_effort(store=store, table=args.table, variable=args.variable, confirmed_table=ctx.get("confirmed_table"))
     _validate_table_variable(store=store, table=table, variable=variable)
     # Fetch data once, then export + plot from in-memory dataframe.
     api = make_pycmap_api(ctx["cmap_api_key"], base_url=args.base_url)
@@ -917,30 +881,29 @@ def plot_timeseries(args: PlotTimeseriesArgs, ctx: dict) -> dict[str, Any]:
 
     if resolved and resolved.get('original') != resolved.get('resolved'):
         out['resolved'] = resolved
+    if resolved and resolved.get('substitution_warning'):
+        out['substitution_warning'] = resolved['substitution_warning']
     return out
 
 
 def _fetch_dataset_meta_for_table(store, table: str) -> dict[str, Any] | None:
-    if store is None or not hasattr(store, "engine") or not table:
+    """Fetch basic dataset metadata from the in-memory cache."""
+    if not table:
         return None
-    with store.engine.begin() as conn:
-        row = conn.execute(
-            text(
-                """
-                SELECT TOP 1
-                    TableName,
-                    Description,
-                    TemporalResolution,
-                    SpatialResolution,
-                    TimeMin,
-                    TimeMax
-                FROM agent.CatalogDatasets
-                WHERE TableName = :t
-                """
-            ),
-            {"t": table},
-        ).mappings().first()
-    return dict(row) if row else None
+    if store is not None and hasattr(store, "engine"):
+        _catalog_cache.ensure_loaded(store)
+    rows = [r for r in _catalog_cache.rows if str(r.get("table_name") or "").strip() == table.strip()]
+    if not rows:
+        return None
+    r = rows[0]
+    return {
+        "TableName": r.get("table_name"),
+        "Description": r.get("description"),
+        "TemporalResolution": r.get("temporal_resolution"),
+        "SpatialResolution": r.get("spatial_resolution"),
+        "TimeMin": r.get("time_min"),
+        "TimeMax": r.get("time_max"),
+    }
 
 
 def _infer_temporal_window_days(meta: dict[str, Any] | None) -> int | None:
@@ -1121,12 +1084,44 @@ def plot_map(args: PlotMapArgs, ctx: dict) -> dict[str, Any]:
     # CMAP query mode: fetch via pycmap.space_time then plot
     # ------------------------------------------------------------
     store = ctx.get("store")
-    table, variable, resolved = _resolve_table_variable_best_effort(store=store, table=str(args.table), variable=str(args.variable))
+    table, variable, resolved = _resolve_table_variable_best_effort(store=store, table=str(args.table), variable=str(args.variable), confirmed_table=ctx.get("confirmed_table"))
     _validate_table_variable(store=store, table=table, variable=variable)
 
     meta = _fetch_dataset_meta_for_table(store, table)
     eff_dt1, eff_dt2 = _expand_exact_date_window(str(args.dt1), str(args.dt2), _infer_temporal_window_days(meta))
     api = make_pycmap_api(ctx["cmap_api_key"], base_url=args.base_url)
+
+    # Clamp depth to surface defaults when the caller used the wide default bounds
+    # (-10000/10000) and the dataset appears to be a surface product.
+    # Signals: Sensor=Satellite, or spatial resolution contains "km"/"°",
+    # or temporal resolution suggests a gridded surface product.
+    _USER_DEPTH_DEFAULT = (-10000.0, 10000.0)
+    depth1 = args.depth1
+    depth2 = args.depth2
+    if depth1 == _USER_DEPTH_DEFAULT[0] and depth2 == _USER_DEPTH_DEFAULT[1]:
+        try:
+            _is_surface = False
+            if meta:
+                _spatial_res = str(meta.get("SpatialResolution") or "").lower()
+                _temporal_res = str(meta.get("TemporalResolution") or "").lower()
+                _description = str(meta.get("Description") or "").lower()
+                # Gridded surface signals: km-scale or degree-scale resolution
+                if any(x in _spatial_res for x in ("km", "°", "deg", "arc", "minute")):
+                    _is_surface = True
+                # Satellite description signals
+                if any(x in _description for x in ("satellite", "modis", "viirs", "meris", "seawifs", "copernicus")):
+                    _is_surface = True
+                # Regular gridded temporal resolution (not irregular in-situ)
+                if any(x in _temporal_res for x in ("daily", "eight day", "8 day", "weekly", "monthly")) and "km" in _spatial_res:
+                    _is_surface = True
+            # Also check args directly — model may have passed sensor hint
+            if str(args.table or "").lower().startswith(("tblmodis", "tblchl", "tblviirs")):
+                _is_surface = True
+            if _is_surface:
+                depth1 = 0.0
+                depth2 = 5.0
+        except Exception:
+            pass
 
     def _space_time_bbox(lat1: float, lat2: float, lon1: float, lon2: float):
         # NOTE: CMAP longitudes are in [-180, 180]. If the requested bbox crosses the antimeridian
@@ -1141,8 +1136,8 @@ def plot_map(args: PlotMapArgs, ctx: dict) -> dict[str, Any]:
                 lat2,
                 float(lon1),
                 180.0,
-                args.depth1,
-                args.depth2,
+                depth1,
+                depth2,
                 servers=args.servers,
             )
             df2 = api.space_time(
@@ -1154,8 +1149,8 @@ def plot_map(args: PlotMapArgs, ctx: dict) -> dict[str, Any]:
                 lat2,
                 -180.0,
                 float(lon2),
-                args.depth1,
-                args.depth2,
+                depth1,
+                depth2,
                 servers=args.servers,
             )
             return pd.concat([df1, df2], ignore_index=True)
@@ -1169,8 +1164,8 @@ def plot_map(args: PlotMapArgs, ctx: dict) -> dict[str, Any]:
             lat2,
             lon1,
             lon2,
-            args.depth1,
-            args.depth2,
+            depth1,
+            depth2,
             servers=args.servers,
         )
 
@@ -1242,12 +1237,12 @@ def plot_map(args: PlotMapArgs, ctx: dict) -> dict[str, Any]:
             f"api = pycmap.API(token=API_KEY, baseURL='{args.base_url}')\n"
             + (
                 (
-                    f"df1 = api.space_time('{table}','{variable}','{eff_dt1}','{eff_dt2}',{args.lat1},{args.lat2},{args.lon1},180.0,{args.depth1},{args.depth2})\n"
-                    f"df2 = api.space_time('{table}','{variable}','{eff_dt1}','{eff_dt2}',{args.lat1},{args.lat2},-180.0,{args.lon2},{args.depth1},{args.depth2})\n"
+                    f"df1 = api.space_time('{table}','{variable}','{eff_dt1}','{eff_dt2}',{args.lat1},{args.lat2},{args.lon1},180.0,{depth1},{depth2})\n"
+                    f"df2 = api.space_time('{table}','{variable}','{eff_dt1}','{eff_dt2}',{args.lat1},{args.lat2},-180.0,{args.lon2},{depth1},{depth2})\n"
                     "df = pd.concat([df1, df2], ignore_index=True)\n"
                 )
                 if (args.lon1 is not None and args.lon2 is not None and float(args.lon1) > float(args.lon2))
-                else f"df = api.space_time('{table}','{variable}','{eff_dt1}','{eff_dt2}',{args.lat1},{args.lat2},{args.lon1},{args.lon2},{args.depth1},{args.depth2})\n"
+                else f"df = api.space_time('{table}','{variable}','{eff_dt1}','{eff_dt2}',{args.lat1},{args.lat2},{args.lon1},{args.lon2},{depth1},{depth2})\n"
             )
         ),
         "effective_dt1": str(eff_dt1),
@@ -1256,4 +1251,6 @@ def plot_map(args: PlotMapArgs, ctx: dict) -> dict[str, Any]:
 
     if resolved and resolved.get('original') != resolved.get('resolved'):
         out['resolved'] = resolved
+    if resolved and resolved.get('substitution_warning'):
+        out['substitution_warning'] = resolved['substitution_warning']
     return out

@@ -275,6 +275,45 @@ class SQLServerStore:
         except Exception:
             return None
 
+    # ------------------------------------------------------------------ #
+    # Thread state (persistent agent state across turns)                  #
+    # ------------------------------------------------------------------ #
+
+    def get_thread_state(self, thread_id: str) -> str | None:
+        """Return the raw AgentState JSON string for a thread, or None.
+
+        Returns None when the column does not exist yet (pre-migration) so
+        callers can treat that as an empty state without crashing.
+        """
+        try:
+            with self.engine.begin() as conn:
+                row = conn.execute(
+                    text("SELECT AgentState FROM agent.Threads WHERE ThreadId = :tid"),
+                    {"tid": thread_id},
+                ).mappings().first()
+            if row is None:
+                return None
+            return row.get("AgentState")
+        except Exception:
+            # Column absent (pre-migration) or any other error — treat as no state.
+            return None
+
+    def set_thread_state(self, thread_id: str, state_json: str) -> None:
+        """Persist the raw AgentState JSON string for a thread.
+
+        Silently no-ops when the column does not exist yet (pre-migration).
+        """
+        try:
+            with self.engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "UPDATE agent.Threads SET AgentState = :state WHERE ThreadId = :tid"
+                    ),
+                    {"state": state_json, "tid": thread_id},
+                )
+        except Exception:
+            pass
+
     # Placeholder: adapt to CMAP Users/API key table
     def load_cmap_api_key(self, user_id: int) -> str | None:
         # Prefer explicit fallback if provided.

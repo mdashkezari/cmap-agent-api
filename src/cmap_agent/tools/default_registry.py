@@ -38,7 +38,10 @@ def build_default_registry() -> ToolRegistry:
     reg.register(Tool(
         name="catalog.search_roi",
         description=(
-            "Find datasets that overlap a Region Of Interest (ROI) bounding box, optionally filtered by make (Observation/Model/Assimilation) and sensor (in-Situ/Satellite)."
+            "Find ALL datasets that spatially overlap a Region Of Interest (ROI) bounding box. "
+            "Use this as the FIRST tool when the user asks 'what datasets cover region X' or 'what data is available at lat/lon bounds'. "
+            "Returns datasets regardless of variable content — follow up with catalog.search_kb_first using specific variable names (e.g. 'nitrate phosphate') to filter by scientific relevance. "
+            "Optionally filtered by make (Observation/Model/Assimilation) and sensor (in-Situ/Satellite)."
         ),
         args_model=CatalogSearchROIArgs,
         fn=catalog_search_roi,

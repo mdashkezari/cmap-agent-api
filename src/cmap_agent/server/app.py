@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import logging
 import os
 import json
+import traceback
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
@@ -12,11 +14,15 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.security.api_key import APIKeyHeader
 from starlette.responses import JSONResponse
 
+from cmap_agent.agent.state import ThreadState
 from cmap_agent.config.settings import settings
+from cmap_agent.utils import to_jsonable as _to_jsonable_shared
 from cmap_agent.storage.sqlserver import SQLServerStore
 from cmap_agent.tools.default_registry import build_default_registry
 from cmap_agent.agent.context import build_system_prompt
-from cmap_agent.agent.runner import execute_plan
+from cmap_agent.agent.runner import execute_plan, AgentFinal
+
+log = logging.getLogger(__name__)
 from cmap_agent.llm.openai_client import OpenAIClient
 from cmap_agent.server.models import (
     ChatRequest,
@@ -117,30 +123,19 @@ def _build_version_payload() -> dict[str, str]:
 
 
 
-def _to_jsonable(obj: Any) -> Any:
-    """Recursively convert objects into JSON-serializable equivalents.
+# _to_jsonable is imported from cmap_agent.utils as _to_jsonable_shared
+_to_jsonable = _to_jsonable_shared
 
-    This is used defensively at the API boundary so tool traces / artifacts
-    never cause response serialization failures (e.g., datetime / pandas Timestamp).
-    """
 
-    if obj is None or isinstance(obj, (str, int, float, bool)):
-        return obj
-    if isinstance(obj, (datetime, date)):
-        return obj.isoformat()
-    if isinstance(obj, Decimal):
-        return float(obj)
-    if isinstance(obj, bytes):
-        return obj.decode("utf-8", errors="replace")
-    if isinstance(obj, dict):
-        return {str(k): _to_jsonable(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple, set)):
-        return [_to_jsonable(v) for v in obj]
-    try:
-        return str(obj)
-    except Exception:
-        return repr(obj)
 
+_backend_raw = getattr(settings, "CMAP_AGENT_ARTIFACT_BACKEND", "local")
+_backend = str(_backend_raw or "local").strip().strip('"').strip("'").strip().lower()
+
+# Serve artifacts (parquet/csv/png) for local dev usage.
+# In production we prefer S3 + pre-signed URLs, so /artifacts is intentionally not mounted.
+if _backend == "local":
+    os.makedirs(settings.CMAP_AGENT_ARTIFACT_DIR, exist_ok=True)
+    app.mount("/artifacts", StaticFiles(directory=settings.CMAP_AGENT_ARTIFACT_DIR), name="artifacts")
 
 
 def _sanitize_public(obj: Any) -> Any:
@@ -168,14 +163,6 @@ def _sanitize_public(obj: Any) -> Any:
 
 # Serve artifacts (parquet/csv/png) for local dev usage
 # In production we prefer S3 + pre-signed URLs, so /artifacts may be unused.
-_backend_raw = getattr(settings, "CMAP_AGENT_ARTIFACT_BACKEND", "local")
-_backend = str(_backend_raw or "local").strip().strip('"').strip("'").strip().lower()
-
-# Serve artifacts (parquet/csv/png) for local dev usage.
-# In production we prefer S3 + pre-signed URLs, so /artifacts is intentionally not mounted.
-if _backend == "local":
-    os.makedirs(settings.CMAP_AGENT_ARTIFACT_DIR, exist_ok=True)
-    app.mount("/artifacts", StaticFiles(directory=settings.CMAP_AGENT_ARTIFACT_DIR), name="artifacts")
 
 _store: SQLServerStore | None = None
 _authenticator: ApiKeyAuthenticator | None = None
@@ -587,7 +574,11 @@ def chat(
             else req.options.max_tool_calls
         )
 
-        final, tool_trace = execute_plan(
+        # Load persistent thread state (NULL column treated as blank state)
+        thread_state = ThreadState.from_json(store.get_thread_state(thread_id))
+        ctx["thread_state"] = thread_state
+
+        result = execute_plan(
             llm=llm,
             registry=reg,
             system_prompt=sys_prompt,
@@ -596,6 +587,30 @@ def chat(
             ctx=ctx,
             max_tool_calls=max_calls,
         )
+
+        # execute_plan returns (AgentFinal, tool_trace, ThreadState).
+        # Guard defensively so a future signature change never silently
+        # produces a 500 with a confusing attribute error.
+        if not isinstance(result, tuple) or len(result) != 3:
+            raise RuntimeError(
+                f"execute_plan returned unexpected type: {type(result)}"
+            )
+        final, tool_trace, updated_state = result
+
+        if not isinstance(final, AgentFinal):
+            log.error(
+                "execute_plan final is not AgentFinal but %s: %r",
+                type(final), final,
+            )
+            raise RuntimeError(
+                f"execute_plan returned non-AgentFinal result: {type(final)}"
+            )
+
+        # Persist updated state (best effort — never fails the response)
+        try:
+            store.set_thread_state(thread_id, updated_state.to_json())
+        except Exception:
+            pass
 
         # Persist assistant message
         _assistant_msg_id = store.add_message(
@@ -660,5 +675,8 @@ def chat(
     except SystemExit as e:
         # Defensive: sys.exit() should never take down the API worker.
         raise HTTPException(status_code=500, detail=f"SystemExit: {str(e) or 'SystemExit'}")
+    except HTTPException:
+        raise
     except Exception as e:
+        log.error("Unhandled exception in /chat:\n%s", traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))

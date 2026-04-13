@@ -39,7 +39,7 @@ def main():
 
     llm = OpenAIClient(args.model) if args.provider=="openai" else AnthropicClient(args.model)
 
-    final, tool_trace = execute_plan(
+    final, tool_trace, _state = execute_plan(
         llm=llm,
         registry=reg,
         system_prompt=sys_prompt,

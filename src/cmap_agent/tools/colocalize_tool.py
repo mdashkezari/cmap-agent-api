@@ -20,6 +20,7 @@ from pycmap.sample import Sample
 from cmap_agent.tools.pycmap_safe import make_pycmap_api
 from cmap_agent.tools.cmap_tools import _export_df
 from cmap_agent.storage.sqlserver import SQLServerStore
+from cmap_agent.tools.catalog_tools import _catalog_cache
 from sqlalchemy import text
 
 
@@ -456,27 +457,26 @@ def cmap_colocalize(args: ColocalizeArgs, ctx: dict) -> dict[str, Any]:
         except Exception:
             store = None
 
-    meta_by_table: dict[str, dict[str, Any]] = {}
+    # Load tolerances from in-memory catalog cache — no SQL round trips needed.
     if store is not None:
-        try:
-            with store.engine.begin() as conn:
-                for table in sorted({t.table for t in args.targets}):
-                    row = conn.execute(
-                        text(
-                            "SELECT TOP 1 SpatialResolution, TemporalResolution, HasDepth "
-                            "FROM agent.CatalogDatasets WHERE TableName = :table"
-                        ),
-                        {"table": table},
-                    ).mappings().first()
+        _catalog_cache.ensure_loaded(store)
 
-                    meta: dict[str, Any] = {
-                        "SpatialResolution": str((row or {}).get("SpatialResolution") or ""),
-                        "TemporalResolution": str((row or {}).get("TemporalResolution") or ""),
-                        "HasDepth": (row or {}).get("HasDepth"),
-                    }
-
-                    # Prefer explicit climatology flag from tblDatasets when available.
-                    try:
+    meta_by_table: dict[str, dict[str, Any]] = {}
+    cache_rows = _catalog_cache.rows
+    if cache_rows:
+        for table in sorted({t.table for t in args.targets}):
+            tbl_rows = [r for r in cache_rows
+                        if str(r.get("table_name") or "").strip() == table.strip()]
+            first = tbl_rows[0] if tbl_rows else {}
+            meta: dict[str, Any] = {
+                "SpatialResolution": str(first.get("spatial_resolution") or ""),
+                "TemporalResolution": str(first.get("temporal_resolution") or ""),
+                "HasDepth": None,  # not in udfCatalog — inferred later from depth bounds
+            }
+            # Climatology flag still needs SQL (not in udfCatalog)
+            if store is not None:
+                try:
+                    with store.engine.begin() as conn:
                         row2 = conn.execute(
                             text(
                                 "SELECT TOP 1 Climatology FROM dbo.tblDatasets WHERE TableName = :table"
@@ -485,12 +485,9 @@ def cmap_colocalize(args: ColocalizeArgs, ctx: dict) -> dict[str, Any]:
                         ).mappings().first()
                         if row2 is not None and "Climatology" in row2:
                             meta["Climatology"] = row2["Climatology"]
-                    except Exception:
-                        pass
-
-                    meta_by_table[table] = meta
-        except Exception:
-            meta_by_table = {}
+                except Exception:
+                    pass
+            meta_by_table[table] = meta
 
 # Representative latitude used when converting km -> lon degrees.
     median_lat = 0.0

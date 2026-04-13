@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+import time
+import logging
 from typing import Any, Optional, Literal
 
 from pydantic import BaseModel, Field
@@ -9,198 +11,356 @@ from sqlalchemy import text
 from cmap_agent.rag.chroma_kb import ChromaKB
 from cmap_agent.storage.sqlserver import SQLServerStore
 
+log = logging.getLogger(__name__)
 
-_STOPWORDS = {
-    "a",
-    "an",
-    "and",
-    "are",
-    "as",
-    "at",
-    "be",
-    "by",
-    "for",
-    "from",
-    "in",
-    "into",
-    "is",
-    "it",
-    "of",
-    "on",
-    "or",
-    "that",
-    "the",
-    "this",
-    "to",
-    "with",
-}
+# ---------------------------------------------------------------------------
+# UDF-backed in-memory catalog cache
+# ---------------------------------------------------------------------------
 
-# Minimal synonym expansion to boost recall for common CMAP queries.
-_SYNONYMS: dict[str, list[str]] = {
-    "sst": ["sea surface temperature"],
-    "chl": ["chlorophyll"],
-    "chla": ["chlorophyll"],
-    "chlor_a": ["chlorophyll"],
-    "mld": ["mixed layer depth"],
-    "par": ["photosynthetically active radiation"],
+_CACHE_TTL_SECONDS = 6 * 3600  # 6 hours
 
-    # Precipitation
-    "precip": ["precipitation", "rain", "rainfall"],
-    "precipitation": ["rain", "rainfall", "total precipitation", "rain rate", "tp"],
-    "rainfall": ["precipitation", "rain rate"],
-    "tp": ["total precipitation", "precipitation", "rainfall"],
-
-    # Nutrients / biogeochemistry
-    "nutrient": [
-        "nutrients",
-        "nitrate", "nitrite", "ammonium", "phosphate", "silicate",
-        "no3", "no2", "nh4", "po4", "si",
-        "din", "dissolved inorganic nitrogen",
-        "dip", "dissolved inorganic phosphorus",
-    ],
-    "nutrients": [
-        "nitrate", "nitrite", "ammonium", "phosphate", "silicate",
-        "no3", "no2", "nh4", "po4", "si",
-        "din", "dissolved inorganic nitrogen",
-        "dip", "dissolved inorganic phosphorus",
-    ],
-    "no3": ["nitrate"],
-    "no2": ["nitrite"],
-    "nh4": ["ammonium"],
-    "po4": ["phosphate"],
-    "si": ["silicate"],
-}
+# Columns pulled from udfCatalog() — enough for search, ranking, and display.
+# Heavy columns (statistics, unstructured metadata) are excluded to keep memory low.
+_UDF_SELECT = """
+    Table_Name        AS table_name,
+    Dataset_ID        AS dataset_id,
+    Dataset_Name      AS dataset_name,
+    Dataset_Short_Name AS dataset_short_name,
+    Make              AS make,
+    Sensor            AS sensor,
+    Temporal_Resolution AS temporal_resolution,
+    Spatial_Resolution  AS spatial_resolution,
+    Time_Min          AS time_min,
+    Time_Max          AS time_max,
+    Lat_Min           AS lat_min,
+    Lat_Max           AS lat_max,
+    Lon_Min           AS lon_min,
+    Lon_Max           AS lon_max,
+    Depth_Min         AS depth_min,
+    Depth_Max         AS depth_max,
+    Variable          AS variable,
+    Long_Name         AS long_name,
+    Unit              AS unit,
+    Keywords          AS keywords,
+    Data_Source       AS data_source,
+    Distributor       AS distributor,
+    Dataset_Description AS description,
+    Acknowledgement   AS acknowledgement
+"""
 
 
-def _tokenize(q: str) -> list[str]:
-    q = (q or "").strip().lower()
-    if not q:
-        return []
-    # Keep alphanumerics and underscores; replace other punctuation with spaces.
-    q = re.sub(r"[^a-z0-9_]+", " ", q)
-    raw = [t for t in q.split() if t]
+class CatalogCache:
+    """Lazy-loading, TTL-refreshed in-memory snapshot of the CMAP catalog.
 
-    toks: list[str] = []
-    for t in raw:
-        if t in _STOPWORDS:
-            continue
-        # Many users express variable names in snake_case (e.g., total_precipitation).
-        # Split underscores into separate tokens *unless* the token is a known synonym key
-        # (e.g., chlor_a) where the underscore is meaningful.
-        if '_' in t and t not in _SYNONYMS:
-            for p in t.split('_'):
-                if not p or p in _STOPWORDS:
-                    continue
-                if len(p) >= 2:
-                    toks.append(p)
-            continue
-        if len(t) >= 2:
-            toks.append(t)
-
-    return toks
-
-
-
-def _expand_tokens(tokens: list[str]) -> list[str]:
-    """Normalize/de-duplicate tokens.
-
-    NOTE: We do *not* explode synonyms here because that would turn synonyms into
-    additional required AND-terms. Synonyms are handled inside _build_token_where
-    as OR-alternatives per token.
+    Loaded from udfCatalog() once at first use; refreshed every _CACHE_TTL_SECONDS.
+    All filtering (text search, spatial overlap, variable lookup) runs in Python
+    against this cache — no per-query SQL round trips for catalog operations.
     """
-    out: list[str] = []
-    seen: set[str] = set()
-    for t in tokens or []:
-        tt = (t or "").strip()
-        if not tt:
-            continue
-        if tt.lower() in seen:
-            continue
-        out.append(tt)
-        seen.add(tt.lower())
-    return out
 
-def _expand_query_text_for_kb(q: str) -> str:
-    """Expand common synonyms into the KB query to improve recall.
+    def __init__(self) -> None:
+        self._rows: list[dict[str, Any]] = []
+        self._loaded_at: float = 0.0
+        # Dataset IDs that map to more than one Table_Name (e.g. Darwin).
+        # Detected dynamically from the cache — never hardcoded.
+        self._multi_table_dataset_ids: set[int] = set()
 
-    This keeps the original query intact while appending synonym phrases, e.g.:
-    - "nutrients" -> adds nitrate/phosphate/etc.
-    - "sst" -> adds "sea surface temperature"
+    def _is_fresh(self) -> bool:
+        return bool(self._rows) and (time.time() - self._loaded_at) < _CACHE_TTL_SECONDS
+
+    def load(self, store: SQLServerStore) -> None:
+        """(Re-)load the cache from the database."""
+        log.info("CatalogCache: loading from udfCatalog()...")
+        t0 = time.time()
+        with store.engine.connect() as conn:
+            rows = conn.execute(
+                text(f"SELECT {_UDF_SELECT} FROM udfCatalog()")
+            ).mappings().all()
+        self._rows = [dict(r) for r in rows]
+        self._loaded_at = time.time()
+
+        # Detect multi-table datasets dynamically
+        from collections import defaultdict
+        ds_tables: dict[int, set[str]] = defaultdict(set)
+        for r in self._rows:
+            ds_id = r.get("dataset_id")
+            tbl = r.get("table_name")
+            if ds_id is not None and tbl:
+                ds_tables[int(ds_id)].add(str(tbl))
+        self._multi_table_dataset_ids = {
+            ds_id for ds_id, tables in ds_tables.items() if len(tables) > 1
+        }
+
+        elapsed = time.time() - t0
+        log.info(
+            "CatalogCache: loaded %d rows (%d datasets, %d multi-table) in %.1fs",
+            len(self._rows),
+            len(ds_tables),
+            len(self._multi_table_dataset_ids),
+            elapsed,
+        )
+
+    def ensure_loaded(self, store: SQLServerStore) -> None:
+        if not self._is_fresh():
+            self.load(store)
+
+    @property
+    def rows(self) -> list[dict[str, Any]]:
+        return self._rows
+
+    @property
+    def multi_table_dataset_ids(self) -> set[int]:
+        return self._multi_table_dataset_ids
+
+
+# Module-level singleton
+_catalog_cache = CatalogCache()
+
+
+def _get_cache(ctx: dict) -> tuple[CatalogCache, SQLServerStore]:
+    store = _get_store(ctx)
+    _catalog_cache.ensure_loaded(store)
+    return _catalog_cache, store
+
+
+# ---------------------------------------------------------------------------
+# Text search helpers
+# ---------------------------------------------------------------------------
+
+def _contains(text_val: Any, q_lower: str) -> bool:
+    """Case-insensitive substring check."""
+    return q_lower in str(text_val or "").lower()
+
+
+def _match_score(row: dict[str, Any], q: str) -> float:
+    """Score a cache row by how well it matches query string q.
+
+    Each field contributes at most once per token (binary hit). For multi-word
+    queries, scores are summed across all matched tokens and then averaged, so
+    a dataset matching all query terms scores higher than one matching only one.
+
+    Field specificity: exact variable name > variable LIKE > long_name > keywords >
+    dataset names > table/sensor/source > description/acknowledgement (broad/noisy).
     """
-    q = (q or "").strip()
-    if not q:
-        return q
-    toks = _tokenize(q)
-    extra_phrases: list[str] = []
-    seen: set[str] = set()
-    for t in toks:
-        for phrase in _SYNONYMS.get(t, []):
-            p = (phrase or "").strip()
-            if p and p.lower() not in seen:
-                extra_phrases.append(p)
-                seen.add(p.lower())
-    if not extra_phrases:
-        return q
-    return q + " ; " + " ; ".join(extra_phrases)
-
-
-
-def _build_token_where(
-    *,
-    tokens: list[str],
-    fields: list[str],
-    param_prefix: str,
-) -> tuple[str, dict[str, str]]:
-    """Build a SQL WHERE fragment that requires each token to match (with synonyms as OR-alternatives).
-
-    Semantics:
-      (token0 OR synonyms(token0)) AND (token1 OR synonyms(token1)) AND ...
-
-    Returns: (where_sql, params)
-    """
-    params: dict[str, str] = {}
+    tokens = [t.strip() for t in q.lower().split() if len(t.strip()) >= 3]
     if not tokens:
-        return "", params
+        return 0.0
+    # Score each token separately and average — prevents single-term domination
+    total = 0.0
+    for ql in tokens:
+        total += _match_score_single(row, ql)
+    return total / len(tokens)
 
-    token_clauses: list[str] = []
-    for i, tok in enumerate(tokens):
-        alts = [tok] + list(_SYNONYMS.get(tok, []))
-        alt_clauses: list[str] = []
-        for j, alt in enumerate(alts):
-            p = f"{param_prefix}{i}_{j}"
-            params[p] = f"%{alt}%"
-            ors = " OR ".join([f"{f} LIKE :{p}" for f in fields])
-            alt_clauses.append(f"({ors})")
-        token_clauses.append("(" + " OR ".join(alt_clauses) + ")")
 
-    return " AND ".join(token_clauses), params
+def _match_score_single(row: dict[str, Any], ql: str) -> float:
+    """Score for a single lowercase query token against a cache row."""
+    s = 0.0
+    var = str(row.get("variable") or "").lower()
+    ln = str(row.get("long_name") or "").lower()
+    kw = str(row.get("keywords") or "").lower()
+    ds_name = str(row.get("dataset_name") or "").lower()
+    ds_short = str(row.get("dataset_short_name") or "").lower()
+    tbl = str(row.get("table_name") or "").lower()
+    sensor = str(row.get("sensor") or "").lower()
+    src = str(row.get("data_source") or "").lower()
+    dist = str(row.get("distributor") or "").lower()
+    desc = str(row.get("description") or "").lower()
+    ack = str(row.get("acknowledgement") or "").lower()
+
+    # Each field: binary — either it matches or it doesn't
+    if var == ql:
+        s += 5.0
+    elif ql in var:
+        s += 3.0
+
+    if ln == ql:
+        s += 4.0
+    elif ql in ln:
+        s += 2.0
+
+    if ql in kw:
+        s += 1.5
+
+    if ql in ds_name or ql in ds_short:
+        s += 1.0
+
+    if ql in tbl:
+        s += 0.8
+
+    if ql in sensor or ql in src or ql in dist:
+        s += 0.5
+
+    # Description and acknowledgement are long and noisy — small binary bonus only
+    if ql in desc:
+        s += 0.3
+
+    if ql in ack:
+        s += 0.2
+
+    return s
+
+
+def _search_rows(rows: list[dict[str, Any]], q: str) -> list[dict[str, Any]]:
+    """Return rows matching query q in any searchable field.
+
+    For multi-word queries (e.g. "nitrate phosphate silicate"), a row matches
+    if ANY of the tokens appear in any searchable field. Single-word queries
+    behave as before.
+    """
+    tokens = [t for t in q.lower().split() if len(t) >= 3]
+    if not tokens:
+        return []
+
+    def _row_matches(r: dict[str, Any]) -> bool:
+        blob = " ".join([
+            str(r.get("variable") or ""),
+            str(r.get("long_name") or ""),
+            str(r.get("keywords") or ""),
+            str(r.get("dataset_name") or ""),
+            str(r.get("dataset_short_name") or ""),
+            str(r.get("table_name") or ""),
+            str(r.get("sensor") or ""),
+            str(r.get("data_source") or ""),
+            str(r.get("distributor") or ""),
+            str(r.get("description") or ""),
+            str(r.get("acknowledgement") or ""),
+        ]).lower()
+        return any(t in blob for t in tokens)
+
+    return [r for r in rows if _row_matches(r)]
+
+
+def _row_to_dataset_dict(row: dict[str, Any], kb_score: float = 0.0) -> dict[str, Any]:
+    """Convert a cache variable-level row into a dataset-level result dict."""
+    return {
+        "table": row.get("table_name"),
+        "name": row.get("dataset_short_name") or row.get("dataset_name") or row.get("table_name"),
+        "title": row.get("dataset_name"),
+        "dataset_id": row.get("dataset_id"),
+        "make": row.get("make"),
+        "sensor": row.get("sensor"),
+        "description": (str(row.get("description") or ""))[:400],
+        "kb_score": kb_score,
+        "time_min": row.get("time_min"),
+        "time_max": row.get("time_max"),
+        "lat_min": row.get("lat_min"),
+        "lat_max": row.get("lat_max"),
+        "lon_min": row.get("lon_min"),
+        "lon_max": row.get("lon_max"),
+        "spatial_resolution": row.get("spatial_resolution"),
+        "temporal_resolution": row.get("temporal_resolution"),
+    }
+
+
+def _dataset_type_bonus(row: dict[str, Any]) -> float:
+    """Bonus/penalty for dataset type to rank gridded/satellite products above
+    cruise in-situ datasets when the variable name match is ambiguous.
+
+    Cruise datasets often have variables literally named "Chlorophyll",
+    "Nitrate" etc. — exact matches for common queries — but gridded satellite
+    or model products are almost always what users want for mapping requests.
+    The bonuses here are large enough to overcome a variable-name exact match.
+    """
+    tres = str(row.get("temporal_resolution") or "").lower()
+    sres = str(row.get("spatial_resolution") or "").lower()
+    sensor = str(row.get("sensor") or "").lower()
+    s = 0.0
+    # Gridded/regular temporal resolution
+    if any(t in tres for t in ("daily", "eight day", "weekly", "monthly", "annual")):
+        s += 3.0
+    # Gridded spatial resolution
+    if any(t in sres for t in ("km", "degree", "°")):
+        s += 2.0
+    # Satellite sensor
+    if "satellite" in sensor:
+        s += 2.0
+    # Point-like / cruise: both irregular → penalty
+    if "irregular" in tres and "irregular" in sres:
+        s -= 2.0
+    return s
+
+
+def _deduplicate_to_datasets(
+    matched_rows: list[dict[str, Any]],
+    q: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Deduplicate variable-level matched rows to dataset/table level.
+
+    For each unique Table_Name, pick the best-scoring variable row as the
+    representative. The effective ranking score combines field-specificity
+    match_score with a small dataset-type bonus (gridded/satellite preferred).
+    This prevents cruise datasets with a variable literally named "Chlorophyll"
+    from always outranking satellite products whose canonical variable is "chlor_a".
+    """
+    best: dict[str, tuple[float, dict[str, Any]]] = {}
+    for row in matched_rows:
+        tbl = str(row.get("table_name") or "")
+        if not tbl:
+            continue
+        score = _match_score(row, q) + _dataset_type_bonus(row)
+        if tbl not in best or score > best[tbl][0]:
+            best[tbl] = (score, row)
+
+    # Sort by descending effective score
+    ranked = sorted(best.values(), key=lambda x: -x[0])
+    results = []
+    for score, row in ranked[:limit]:
+        d = _row_to_dataset_dict(row, kb_score=score)
+        _add_reason(d, q)
+        results.append(d)
+    return results
+
+
+def _add_reason(d: dict[str, Any], q: str) -> None:
+    ql = q.lower()
+    tbl = (d.get("table") or "").lower()
+    name = (d.get("name") or "").lower()
+    title = (d.get("title") or "").lower()
+    if tbl == ql or name == ql or title == ql:
+        d["reason"] = "exact"
+    elif ql in tbl or ql in name or ql in title:
+        d["reason"] = "partial"
+    else:
+        d["reason"] = "metadata"
+
+
+# ---------------------------------------------------------------------------
+# Arg models
+# ---------------------------------------------------------------------------
 
 class CatalogSearchArgs(BaseModel):
-    query: str = Field(..., description="Free text query, e.g. 'chlorophyll', 'SST', 'ARGO oxygen'")
-    limit: int = Field(10, ge=1, le=50, description="Max number of results")
+    query: str = Field(..., description="Search term — variable name, dataset name, or scientific concept.")
+    limit: int = Field(15, ge=1, le=50, description="Max number of results")
 
 
 class CatalogSearchVariablesArgs(BaseModel):
-    query: str = Field(..., description="Free text query for variables, e.g. 'chlorophyll', 'sst', 'oxygen'")
-    table_hint: str | None = Field(None, description="Optional dataset table name to restrict search")
+    query: str = Field(..., description="Variable name or scientific term to search for.")
     limit: int = Field(10, ge=1, le=50, description="Max number of results")
+    table_hint: str | None = Field(None, description="Restrict search to this table name.")
+
 
 class DatasetMetadataArgs(BaseModel):
     table: str
+
 
 class ListVariablesArgs(BaseModel):
     table: str
 
 
 class CountDatasetsArgs(BaseModel):
-    """No-arg tool: returns the number of datasets in the cached catalog."""
+    """No-arg tool: returns the number of datasets in the catalog."""
     pass
 
 
 class DatasetSummaryArgs(BaseModel):
     query: str = Field(..., description="Dataset table name or a text query (short name/title/keywords).")
     max_variables: int = Field(25, ge=0, le=200, description="Max number of variables to return")
-    max_matches: int = Field(5, ge=1, le=25, description="If the query is not an exact match, return up to this many matching datasets")
+    max_matches: int = Field(10, ge=1, le=25, description="If the query is not an exact match, return up to this many matching datasets. Use 20 when the user asks for a comprehensive summary of all datasets matching a program or topic.")
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers (keep store accessor for KB tools that still need SQL)
+# ---------------------------------------------------------------------------
 
 def _get_store(ctx: dict) -> SQLServerStore:
     store = ctx.get("store")
@@ -208,153 +368,24 @@ def _get_store(ctx: dict) -> SQLServerStore:
         return store
     return SQLServerStore.from_env()
 
+
+# ---------------------------------------------------------------------------
+# catalog_search — now cache-backed
+# ---------------------------------------------------------------------------
+
 def catalog_search(args: CatalogSearchArgs, ctx: dict) -> dict:
-    store = _get_store(ctx)
+    cache, _ = _get_cache(ctx)
     q = (args.query or "").strip()
     if not q:
-        return {"results": []}
+        return {"results": [], "selected": None, "alternates": [], "total_returned": 0}
 
-    like_full = f"%{q}%"
-    # Include Make and Sensor in the metadata search so queries like "model" or "satellite"
-    # can match without needing special-cased SQL.
-    fields = [
-        "TableName",
-        "ShortName",
-        "DatasetName",
-        "Description",
-        "Keywords",
-        "Make",
-        "Sensor",
-    ]
-
-    tokens = _expand_tokens(_tokenize(q))
-    where_tokens_and, token_params = _build_token_where(tokens=tokens, fields=fields, param_prefix="t")
-
-    # Prefer AND-over-tokens for multi-word queries; if it returns no rows, fall back to
-    # a broader OR-over-full-query search.
-    where_sql = (
-        f"({where_tokens_and})" if where_tokens_and else "(" + " OR ".join([f"{f} LIKE :like_full" for f in fields]) + ")"
-    )
-
-    sql = text(
-        f"""
-        SELECT TOP (:limit)
-            TableName AS [table],
-            DatasetId AS [dataset_id],
-            ShortName AS [name],
-            DatasetName AS [title],
-            Make AS [make],
-            Sensor AS [sensor],
-            Description AS [description],
-            Keywords AS [keywords],
-            TimeMin AS time_min,
-            TimeMax AS time_max,
-            LatMin AS lat_min,
-            LatMax AS lat_max,
-            LonMin AS lon_min,
-            LonMax AS lon_max,
-            SpatialResolution AS spatial_resolution,
-            TemporalResolution AS temporal_resolution
-        FROM agent.CatalogDatasets
-        WHERE {where_sql}
-        ORDER BY
-            CASE
-                WHEN TableName = :q THEN 0
-                WHEN ShortName = :q THEN 1
-                WHEN DatasetName = :q THEN 2
-                WHEN TableName LIKE :like_full THEN 3
-                WHEN ShortName LIKE :like_full THEN 4
-                WHEN DatasetName LIKE :like_full THEN 5
-                ELSE 6
-            END,
-            UpdatedAt DESC
-        """
-    )
-
-    with store.engine.begin() as conn:
-        params = {"limit": args.limit, "like_full": like_full, "q": q}
-        params.update(token_params)
-        rows = conn.execute(sql, params).mappings().all()
-
-        # Fallback: if token-AND search yields no results, use a broader OR search.
-        if not rows and where_tokens_and:
-            where_or = " OR ".join([f"{f} LIKE :like_full" for f in fields])
-            sql2 = text(
-                f"""
-                SELECT TOP (:limit)
-                    TableName AS [table],
-                    DatasetId AS [dataset_id],
-                    ShortName AS [name],
-                    DatasetName AS [title],
-                    Make AS [make],
-                    Sensor AS [sensor],
-                    Description AS [description],
-                    Keywords AS [keywords],
-                    TimeMin AS time_min,
-                    TimeMax AS time_max,
-                    LatMin AS lat_min,
-                    LatMax AS lat_max,
-                    LonMin AS lon_min,
-                    LonMax AS lon_max,
-                    SpatialResolution AS spatial_resolution,
-                    TemporalResolution AS temporal_resolution
-                FROM agent.CatalogDatasets
-                WHERE {where_or}
-                ORDER BY
-                    CASE
-                        WHEN TableName = :q THEN 0
-                        WHEN ShortName = :q THEN 1
-                        WHEN DatasetName = :q THEN 2
-                        ELSE 3
-                    END,
-                    UpdatedAt DESC
-                """
-            )
-            rows = conn.execute(sql2, {"limit": args.limit, "like_full": like_full, "q": q}).mappings().all()
-    ql = q.lower()
-
-    def _reason(table: str | None, name: str | None, title: str | None) -> str:
-        t = (table or "").lower()
-        n = (name or "").lower()
-        ti = (title or "").lower()
-        if t == ql or n == ql or ti == ql:
-            return "exact"
-        if ql and (ql in t or ql in n or ql in ti):
-            return "partial"
-        return "metadata"
-
-    results: list[dict] = []
-    for r in rows:
-        table = r["table"]
-        name = r.get("name") or r.get("title") or table
-        title = r.get("title")
-        results.append(
-            {
-                "table": table,
-                "name": name,
-                "title": title,
-                "dataset_id": r.get("dataset_id"),
-                "make": r.get("make"),
-                "sensor": r.get("sensor"),
-                "description": (r.get("description") or "")[:400],
-                "reason": _reason(table, name, title),
-                "time_min": r.get("time_min"),
-                "time_max": r.get("time_max"),
-                "lat_min": r.get("lat_min"),
-                "lat_max": r.get("lat_max"),
-                "lon_min": r.get("lon_min"),
-                "lon_max": r.get("lon_max"),
-                "spatial_resolution": r.get("spatial_resolution"),
-                "temporal_resolution": r.get("temporal_resolution"),
-            }
-        )
+    matched = _search_rows(cache.rows, q)
+    results = _deduplicate_to_datasets(matched, q, limit=args.limit)
 
     selected = results[0] if results else None
     alternates = results[1:6] if len(results) > 1 else []
-
-    # Keep backwards-compatible `results`, but add structured fields so the agent can
-    # reliably present "chosen" vs "also found".
     return {
+        "tool": "catalog.search",
         "query": q,
         "selected": selected,
         "alternates": alternates,
@@ -363,62 +394,43 @@ def catalog_search(args: CatalogSearchArgs, ctx: dict) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# Spatial helpers (unchanged)
+# ---------------------------------------------------------------------------
+
 class CatalogSearchROIArgs(BaseModel):
-    """Search datasets that overlap a Region Of Interest (ROI) bounding box."""
-
-    lat1: float = Field(..., description="Southern latitude (degrees).")
-    lat2: float = Field(..., description="Northern latitude (degrees).")
-    lon1: float = Field(..., description="Western longitude (degrees).")
-    lon2: float = Field(..., description="Eastern longitude (degrees).")
-    make: Optional[str] = Field(
-        None, description="Optional dataset Make filter (e.g., Observation, Model, Assimilation)."
-    )
-    sensor: Optional[str] = Field(None, description="Optional dataset Sensor filter (e.g., in-Situ, Satellite).")
-    rank_mode: Literal["mixed", "overlap_area", "bbox_area"] = Field(
-    "mixed",
-    description="ROI ranking strategy. 'mixed' interleaves global/large-coverage products with tight regional products; "
-                "'overlap_area' prefers datasets with the largest ROI overlap; 'bbox_area' reproduces the legacy behavior "
-                "(smallest bbox first).",
-    )
-
+    lat1: float = Field(..., description="Southern latitude bound")
+    lat2: float = Field(..., description="Northern latitude bound")
+    lon1: float = Field(..., description="Western longitude bound")
+    lon2: float = Field(..., description="Eastern longitude bound")
+    make: str | None = Field(None, description="Filter by make: Observation, Model, or Assimilation")
+    sensor: str | None = Field(None, description="Filter by sensor type")
     limit: int = Field(10, ge=1, le=100, description="Maximum number of datasets to return.")
+    rank_mode: Literal["mixed", "bbox_area", "overlap_area"] = Field(
+        "mixed",
+        description="Ranking strategy: 'mixed' (default) interleaves coverage and tight-bbox ranking.",
+    )
 
 
 def _norm_lat_bounds(lat1: float, lat2: float) -> tuple[float, float]:
-    a = float(lat1)
-    b = float(lat2)
-    return (a, b) if a <= b else (b, a)
+    a, b = float(lat1), float(lat2)
+    return (min(a, b), max(a, b))
 
 
 def _lon_intervals(lon1: float, lon2: float) -> list[tuple[float, float]]:
-    """Return 1 or 2 lon intervals in [-180, 180] handling date-line crossing.
-
-    lon1 is treated as "west" and lon2 as "east". If lon1 > lon2, we assume the ROI crosses the date-line.
-    """
-
     a = float(lon1)
     b = float(lon2)
-
-    # Special-case: some catalog extents represent *full globe* coverage using end points
-    # that differ by ~360 degrees (e.g. [0, 360], [-180, 180], [10, 370]).
-    # If we naively normalize the endpoints into [-180, 180], both may map to the same
-    # value (e.g. 0 and 360 both map to 0), which collapses the interval to ~0° and
-    # causes ROI overlap checks to incorrectly exclude global datasets.
     if abs(b - a) >= 359.0:
         return [(-180.0, 180.0)]
-    # Normalize into [-180, 180]
     def norm(x: float) -> float:
         y = ((x + 180.0) % 360.0) - 180.0
-        # Keep +180 as +180 (not -180) for readability
         if y == -180.0 and x > 0:
             return 180.0
         return y
-
     a = norm(a)
     b = norm(b)
     if a <= b:
         return [(a, b)]
-    # Date-line crossing: [a, 180] U [-180, b]
     return [(a, 180.0), (-180.0, b)]
 
 
@@ -436,24 +448,12 @@ def _bbox_overlaps(
     roi_lon1: float,
     roi_lon2: float,
 ) -> bool:
-    """Conservative overlap check for ROI vs dataset bounds.
-
-    - If dataset bounds are missing, we do not treat it as overlapping.
-    - Handles ROI date-line crossing.
-    - Handles dataset date-line crossing if lon_min > lon_max.
-    """
-
     if ds_lat_min is None or ds_lat_max is None or ds_lon_min is None or ds_lon_max is None:
         return False
-
     lat1, lat2 = _norm_lat_bounds(roi_lat1, roi_lat2)
     if float(ds_lat_max) < lat1 or float(ds_lat_min) > lat2:
         return False
-
     roi_iv = _lon_intervals(roi_lon1, roi_lon2)
-
-    # Dataset may also cross date-line
-    # Always normalize lon bounds and handle dateline crossing consistently.
     ds_iv = _lon_intervals(float(ds_lon_min), float(ds_lon_max))
     for a in roi_iv:
         for b in ds_iv:
@@ -462,46 +462,47 @@ def _bbox_overlaps(
     return False
 
 
-
 def _interval_width(iv: tuple[float, float]) -> float:
     return max(0.0, float(iv[1]) - float(iv[0]))
 
 
 def _lon_span(lon1: float, lon2: float) -> float:
-    """Return longitudinal span in degrees, handling date-line crossing and global extents."""
-    return float(sum(_interval_width(iv) for iv in _lon_intervals(lon1, lon2)))
+    ivs = _lon_intervals(lon1, lon2)
+    return sum(_interval_width(iv) for iv in ivs)
 
 
 def _bbox_area(
-    lat_min: float | None,
-    lat_max: float | None,
-    lon_min: float | None,
-    lon_max: float | None,
+    lat_min: Optional[float],
+    lat_max: Optional[float],
+    lon_min: Optional[float],
+    lon_max: Optional[float],
 ) -> float:
-    """Approximate bbox area in degree^2 (lat_span * lon_span), robust to date-line/global bounds."""
+    if any(v is None for v in (lat_min, lat_max, lon_min, lon_max)):
+        return float("inf")
     try:
-        if lat_min is None or lat_max is None or lon_min is None or lon_max is None:
-            return 1e18
-        lat_span = abs(float(lat_max) - float(lat_min))
+        lat_span = max(0.0, float(lat_max) - float(lat_min))
         lon_span = _lon_span(float(lon_min), float(lon_max))
-        return float(lat_span * lon_span)
+        return lat_span * lon_span
     except Exception:
-        return 1e18
+        return float("inf")
 
 
 def _lon_overlap_width(
-    roi_lon1: float,
-    roi_lon2: float,
     ds_lon_min: float,
     ds_lon_max: float,
+    roi_lon1: float,
+    roi_lon2: float,
 ) -> float:
-    roi_iv = _lon_intervals(roi_lon1, roi_lon2)
-    ds_iv = _lon_intervals(ds_lon_min, ds_lon_max)
-    ov = 0.0
-    for a in roi_iv:
-        for b in ds_iv:
-            ov += max(0.0, min(a[1], b[1]) - max(a[0], b[0]))
-    return float(ov)
+    ds_ivs = _lon_intervals(ds_lon_min, ds_lon_max)
+    roi_ivs = _lon_intervals(roi_lon1, roi_lon2)
+    total = 0.0
+    for a in ds_ivs:
+        for b in roi_ivs:
+            lo = max(a[0], b[0])
+            hi = min(a[1], b[1])
+            if hi > lo:
+                total += hi - lo
+    return total
 
 
 def _bbox_overlap_area(
@@ -515,191 +516,124 @@ def _bbox_overlap_area(
     roi_lon2: float,
 ) -> float:
     lat1, lat2 = _norm_lat_bounds(roi_lat1, roi_lat2)
-    lat_ov = max(0.0, min(float(ds_lat_max), lat2) - max(float(ds_lat_min), lat1))
-    if lat_ov <= 0.0:
-        return 0.0
-    lon_ov = _lon_overlap_width(roi_lon1, roi_lon2, float(ds_lon_min), float(ds_lon_max))
-    if lon_ov <= 0.0:
-        return 0.0
-    return float(lat_ov * lon_ov)
+    ov_lat = max(0.0, min(float(ds_lat_max), lat2) - max(float(ds_lat_min), lat1))
+    ov_lon = _lon_overlap_width(float(ds_lon_min), float(ds_lon_max), roi_lon1, roi_lon2)
+    return ov_lat * ov_lon
 
 
 def _roi_area(lat1: float, lat2: float, lon1: float, lon2: float) -> float:
-    a, b = _norm_lat_bounds(lat1, lat2)
-    return float(abs(b - a) * _lon_span(lon1, lon2))
+    la1, la2 = _norm_lat_bounds(lat1, lat2)
+    return max(0.0, la2 - la1) * _lon_span(lon1, lon2)
 
 
 def _matches_make_sensor(record: dict, make: Optional[str] = None, sensor: Optional[str] = None) -> bool:
-    """Filter helper for KB results.
-
-    Records may store fields directly (e.g., {"make": "...", "sensor": "..."})
-    or nested under a "metadata" dict. Matching is case-insensitive substring.
-    """
-    if not make and not sensor:
-        return True
-    if not isinstance(record, dict):
-        return False
-
-    # Prefer explicit keys, but also look under record["metadata"] if present.
-    meta = record.get("metadata")
-    if isinstance(meta, dict):
-        merged = {**meta, **record}
-    else:
-        merged = record
-
-    def _norm(x: object) -> str:
-        return str(x).strip().lower() if x is not None else ""
-
     if make:
-        rec_make = _norm(merged.get("make"))
-        if not rec_make or _norm(make) not in rec_make:
+        rec_make = str(record.get("make") or "").strip().lower()
+        if rec_make and make.strip().lower() not in rec_make:
             return False
-
     if sensor:
-        rec_sensor = _norm(merged.get("sensor"))
-        if not rec_sensor or _norm(sensor) not in rec_sensor:
+        rec_sensor = str(record.get("sensor") or "").strip().lower()
+        if rec_sensor and sensor.strip().lower() not in rec_sensor:
             return False
-
     return True
 
 
-def catalog_search_roi(args: CatalogSearchROIArgs, ctx: dict) -> dict:
-    """ROI-only dataset search using SQL-cached extents."""
+# ---------------------------------------------------------------------------
+# catalog_search_roi — now cache-backed
+# ---------------------------------------------------------------------------
 
-    store = _get_store(ctx)
+def catalog_search_roi(args: CatalogSearchROIArgs, ctx: dict) -> dict:
+    """ROI-only dataset search using the in-memory catalog cache."""
+    cache, _ = _get_cache(ctx)
     lat1, lat2 = _norm_lat_bounds(args.lat1, args.lat2)
-    # Fetch a superset from SQL and filter robustly in Python (handles date-line crossing).
-    sql = text(
-        """
-        SELECT
-            DatasetId AS dataset_id,
-            TableName AS [table],
-            ShortName AS [name],
-            DatasetName AS [title],
-            Description AS [description],
-            Make AS [make],
-            Sensor AS [sensor],
-            TimeMin AS time_min,
-            TimeMax AS time_max,
-            LatMin AS lat_min,
-            LatMax AS lat_max,
-            LonMin AS lon_min,
-            LonMax AS lon_max,
-            SpatialResolution AS spatial_resolution,
-            TemporalResolution AS temporal_resolution
-        FROM agent.CatalogDatasets
-        """
-    )
-    with store.engine.connect() as conn:
-        rows = [dict(r._mapping) for r in conn.execute(sql)]
+
+    # Deduplicate cache to one row per table (for ROI, we don't need variable-level)
+    seen_tables: set[str] = set()
+    dataset_rows: list[dict[str, Any]] = []
+    for r in cache.rows:
+        tbl = str(r.get("table_name") or "")
+        if tbl and tbl not in seen_tables:
+            seen_tables.add(tbl)
+            dataset_rows.append(r)
 
     filtered: list[dict[str, Any]] = []
-    for r in rows:
-        if not _matches_make_sensor(r.get("make"), args.make):
-            continue
-        if not _matches_make_sensor(r.get("sensor"), args.sensor):
+    for r in dataset_rows:
+        if not _matches_make_sensor(r, make=args.make, sensor=args.sensor):
             continue
         if _bbox_overlaps(
-            r.get("lat_min"),
-            r.get("lat_max"),
-            r.get("lon_min"),
-            r.get("lon_max"),
-            lat1,
-            lat2,
-            args.lon1,
-            args.lon2,
+            r.get("lat_min"), r.get("lat_max"),
+            r.get("lon_min"), r.get("lon_max"),
+            lat1, lat2, args.lon1, args.lon2,
         ):
-            filtered.append(r)
+            d = _row_to_dataset_dict(r)
+            filtered.append(d)
 
-    # Rank ROI overlaps. We compute both (1) dataset bbox area (coverage size) and (2) overlap with the ROI.
     roi_area = _roi_area(args.lat1, args.lat2, args.lon1, args.lon2)
     roi_area = roi_area if roi_area > 0 else 1.0
 
-    for r in filtered:
-        r["_bbox_area"] = _bbox_area(r.get("lat_min"), r.get("lat_max"), r.get("lon_min"), r.get("lon_max"))
+    for d in filtered:
+        d["_bbox_area"] = _bbox_area(d.get("lat_min"), d.get("lat_max"), d.get("lon_min"), d.get("lon_max"))
         try:
-            r["_overlap_area"] = _bbox_overlap_area(
-                float(r.get("lat_min")),
-                float(r.get("lat_max")),
-                float(r.get("lon_min")),
-                float(r.get("lon_max")),
-                args.lat1,
-                args.lat2,
-                args.lon1,
-                args.lon2,
+            d["_overlap_area"] = _bbox_overlap_area(
+                float(d.get("lat_min")), float(d.get("lat_max")),
+                float(d.get("lon_min")), float(d.get("lon_max")),
+                args.lat1, args.lat2, args.lon1, args.lon2,
             )
         except Exception:
-            r["_overlap_area"] = 0.0
-        r["_overlap_frac"] = float(r["_overlap_area"]) / float(roi_area)
+            d["_overlap_area"] = 0.0
+        d["_overlap_frac"] = float(d["_overlap_area"]) / float(roi_area)
 
     mode = (args.rank_mode or "mixed").strip().lower()
     if mode == "bbox_area":
-        # Legacy: smallest bbox first.
         filtered.sort(key=lambda r: (float(r.get("_bbox_area") or 1e18), float(r.get("dataset_id") or 1e18)))
     elif mode == "overlap_area":
-        # Prefer the *largest* overlap with ROI; break ties by broader coverage (so global products don't get starved).
-        filtered.sort(
-            key=lambda r: (
-                -float(r.get("_overlap_frac") or 0.0),
-                -float(r.get("_overlap_area") or 0.0),
-                -float(r.get("_bbox_area") or 0.0),
-                float(r.get("dataset_id") or 1e18),
-            )
-        )
+        filtered.sort(key=lambda r: (
+            -float(r.get("_overlap_frac") or 0.0),
+            -float(r.get("_overlap_area") or 0.0),
+            -float(r.get("_bbox_area") or 0.0),
+            float(r.get("dataset_id") or 1e18),
+        ))
     else:
-        # Mixed: interleave "coverage" ranking with "tight bbox" ranking for diversity.
-        by_cov = sorted(
-            filtered,
-            key=lambda r: (
-                -float(r.get("_overlap_frac") or 0.0),
-                -float(r.get("_overlap_area") or 0.0),
-                -float(r.get("_bbox_area") or 0.0),
-                float(r.get("dataset_id") or 1e18),
-            ),
-        )
-        by_tight = sorted(
-            filtered,
-            key=lambda r: (
-                float(r.get("_bbox_area") or 1e18),
-                -float(r.get("_overlap_frac") or 0.0),
-                -float(r.get("_overlap_area") or 0.0),
-                float(r.get("dataset_id") or 1e18),
-            ),
-        )
+        by_cov = sorted(filtered, key=lambda r: (
+            -float(r.get("_overlap_frac") or 0.0),
+            -float(r.get("_overlap_area") or 0.0),
+            -float(r.get("_bbox_area") or 0.0),
+            float(r.get("dataset_id") or 1e18),
+        ))
+        by_tight = sorted(filtered, key=lambda r: (
+            float(r.get("_bbox_area") or 1e18),
+            -float(r.get("_overlap_frac") or 0.0),
+            -float(r.get("_overlap_area") or 0.0),
+            float(r.get("dataset_id") or 1e18),
+        ))
         out: list[dict[str, Any]] = []
         seen: set[str] = set()
         i = j = 0
         while len(out) < args.limit and (i < len(by_cov) or j < len(by_tight)):
             if i < len(by_cov):
-                r = by_cov[i]
-                i += 1
+                r = by_cov[i]; i += 1
                 t = str(r.get("table") or "")
                 if t and t not in seen:
-                    out.append(r)
-                    seen.add(t)
+                    out.append(r); seen.add(t)
                     if len(out) >= args.limit:
                         break
             if j < len(by_tight):
-                r = by_tight[j]
-                j += 1
+                r = by_tight[j]; j += 1
                 t = str(r.get("table") or "")
                 if t and t not in seen:
-                    out.append(r)
-                    seen.add(t)
+                    out.append(r); seen.add(t)
         filtered = out
+
     def _clean_row(r: dict[str, Any]) -> dict[str, Any]:
-        # Hide internal ranking helpers (keys prefixed with "_")
         return {k: v for k, v in (r or {}).items() if not str(k).startswith("_")}
 
-    results = [_clean_row(r) for r in filtered[: args.limit]]
+    results = [_clean_row(r) for r in filtered[:args.limit]]
     selected = results[0] if results else None
     alternates = results[1:6] if len(results) > 1 else []
     return {
-        "query": {
-            "roi": {"lat1": args.lat1, "lat2": args.lat2, "lon1": args.lon1, "lon2": args.lon2},
-            "make": args.make,
-            "sensor": args.sensor,
-        },
+        "tool": "catalog.search_roi",
+        "query": {"roi": {"lat1": args.lat1, "lat2": args.lat2, "lon1": args.lon1, "lon2": args.lon2},
+                  "make": args.make, "sensor": args.sensor},
         "selected": selected,
         "alternates": alternates,
         "results": results,
@@ -707,76 +641,51 @@ def catalog_search_roi(args: CatalogSearchROIArgs, ctx: dict) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# KB-first search (ChromaDB semantic + cache-backed SQL augmentation)
+# ---------------------------------------------------------------------------
+
 class CatalogSearchKBFArgs(BaseModel):
-    """KB-first dataset search (semantic discovery, then apply constraints)."""
-
-    query: str = Field(..., description="Natural-language query describing the desired data (e.g., 'nutrients', 'nitrate', 'model NO3').")
-    lat1: Optional[float] = Field(None, description="Optional ROI southern latitude.")
-    lat2: Optional[float] = Field(None, description="Optional ROI northern latitude.")
-    lon1: Optional[float] = Field(None, description="Optional ROI western longitude.")
-    lon2: Optional[float] = Field(None, description="Optional ROI eastern longitude.")
-    dt1: Optional[str] = Field(None, description="Optional start date/time context from the user request.")
-    dt2: Optional[str] = Field(None, description="Optional end date/time context from the user request.")
-    make: Optional[str] = Field(None, description="Optional dataset Make filter.")
-    sensor: Optional[str] = Field(None, description="Optional dataset Sensor filter.")
-    roi_rank_mode: Literal["mixed", "overlap_area", "bbox_area"] = Field(
-    "mixed",
-    description="When an ROI is provided, controls how ROI candidates are ranked for backfill. "
-                "'mixed' interleaves global coverage with tight regional products; 'overlap_area' prefers maximum overlap; "
-                "'bbox_area' reproduces legacy behavior.",
-    )
-
+    query: str = Field(..., description="Scientific variable/dataset search query.")
+    lat1: float | None = None
+    lat2: float | None = None
+    lon1: float | None = None
+    lon2: float | None = None
+    dt1: str | None = None
+    dt2: str | None = None
+    make: str | None = None
+    sensor: str | None = None
     limit: int = Field(10, ge=1, le=50, description="Maximum number of datasets to return.")
-    kb_k: int = Field(30, ge=5, le=500, description="Number of KB matches to consider (dynamic default may increase when ROI is provided).")
-
-
-def _infer_make_sensor_from_query(q: str) -> tuple[Optional[str], Optional[str]]:
-    s = (q or "").lower()
-    make = None
-    sensor = None
-    if "assimilation" in s:
-        make = "Assimilation"
-    elif "model" in s or "forecast" in s or "reanalysis" in s:
-        make = "Model"
-    elif "observation" in s or "observations" in s:
-        make = "Observation"
-
-    if "satellite" in s:
-        sensor = "Satellite"
-    elif "in situ" in s or "insitu" in s or "cruise" in s or "ctd" in s:
-        sensor = "in-Situ"
-    return make, sensor
-
-
 
 
 def _field_family_from_query(q: str) -> str | None:
-    s = (q or "").lower()
-    fams = {
-        "chlorophyll": ["chlorophyll", "chlor_a", "chl", "chla"],
-        "nitrate": ["nitrate", "no3"],
-        "nitrite": ["nitrite", "no2"],
-        "phosphate": ["phosphate", "po4"],
-        "silicate": ["silicate", "silicic", "si"],
-        "oxygen": ["oxygen", "o2", "dissolved oxygen"],
-        "salinity": ["salinity", "sss"],
-        "sst": ["sst", "sea surface temperature", "temperature"],
-        "wind": ["wind", "stress"],
-        "precipitation": ["precip", "precipitation", "rain", "rainfall", "tp"],
+    ql = (q or "").lower()
+    families = {
+        "chlorophyll": ["chlorophyll", "chl", "chlor"],
+        "temperature": ["temperature", "sst", "sst_"],
+        "salinity": ["salinity", "sal", "psu"],
+        "nutrients": ["nitrate", "phosphate", "silicate", "ammonium", "nutrient", "no3", "po4", "si"],
+        "oxygen": ["oxygen", "o2", "aou"],
+        "carbon": ["carbon", "doc", "poc", "dic", "co2", "alkalinity"],
+        "iron": ["iron", "fe"],
+        "wind": ["wind", "u10", "v10"],
+        "precipitation": ["precipitation", "rain", "tp"],
+        "current": ["current", "velocity", "u_vel", "v_vel"],
+        "fluorescence": ["fluorescence", "fluor"],
     }
-    for fam, terms in fams.items():
-        if any(t in s for t in terms):
-            return fam
+    for family, terms in families.items():
+        if any(t in ql for t in terms):
+            return family
     return None
 
 
 def _candidate_blob(r: dict[str, Any]) -> str:
     return " ".join([
-        str(r.get("table") or ""),
-        str(r.get("name") or ""),
-        str(r.get("title") or ""),
+        str(r.get("table") or r.get("table_name") or ""),
+        str(r.get("name") or r.get("dataset_short_name") or ""),
+        str(r.get("title") or r.get("dataset_name") or ""),
         str(r.get("description") or ""),
-        " ".join([str(v) for v in (r.get("matched_variables") or [])]),
+        str(r.get("sensor") or ""),
     ]).lower()
 
 
@@ -784,112 +693,180 @@ def _field_match_score(r: dict[str, Any], family: str | None) -> float:
     if not family:
         return 0.0
     blob = _candidate_blob(r)
-    terms = {
-        "chlorophyll": ["chlorophyll", "chlor_a", "chl", "chla"],
-        "nitrate": ["nitrate", "no3"],
-        "nitrite": ["nitrite", "no2"],
-        "phosphate": ["phosphate", "po4"],
-        "silicate": ["silicate", "silicic", "si"],
+    family_terms = {
+        "chlorophyll": ["chlorophyll", "chl"],
+        "temperature": ["temperature", "sst"],
+        "salinity": ["salinity"],
+        "nutrients": ["nitrate", "phosphate", "silicate", "nutrient"],
         "oxygen": ["oxygen", "o2"],
-        "salinity": ["salinity", "sss"],
-        "sst": ["sea surface temperature", "sst", "temperature"],
-        "wind": ["wind", "stress"],
-        "precipitation": ["precipitation", "precip", "rain", "rainfall", "tp"],
-    }.get(family, [family])
-    score = 0.0
-    for t in terms:
-        if t in blob:
-            score += 1.0
-    return score
+        "carbon": ["carbon", "doc", "poc", "dic"],
+        "iron": ["iron", "fe"],
+        "wind": ["wind"],
+        "precipitation": ["precipitation", "rain"],
+        "current": ["current", "velocity"],
+        "fluorescence": ["fluorescence"],
+    }
+    terms = family_terms.get(family, [family])
+    return float(sum(1 for t in terms if t in blob))
 
 
 def _looks_point_like(r: dict[str, Any]) -> bool:
-    blob = _candidate_blob(r)
-    terms = ["cruise", "mission", "dives", "dive", "glider", "tara", "flow cytometry", "bottle", "ctd", "station", "transect"]
-    return any(t in blob for t in terms)
+    tres = str(r.get("temporal_resolution") or "").lower()
+    sres = str(r.get("spatial_resolution") or "").lower()
+    return "irregular" in tres or "irregular" in sres
 
 
 def _looks_map_friendly(r: dict[str, Any]) -> bool:
-    blob = _candidate_blob(r)
-    good = ["gridded", "grid", "global", "resolution", "forecast", "reanalysis", "analysis", "daily", "8 day", "weekly", "monthly", "satellite"]
-    return any(t in blob for t in good) and not _looks_point_like(r)
+    tres = str(r.get("temporal_resolution") or "").lower()
+    sres = str(r.get("spatial_resolution") or "").lower()
+    return any(t in tres for t in ("daily", "eight day", "weekly", "monthly")) or \
+           any(t in sres for t in ("km", "degree", "°"))
 
 
 def _parse_date_safe(s: Any) -> str | None:
-    s = str(s or "").strip()
     if not s:
         return None
-    m = re.match(r"(\d{4}-\d{2}-\d{2})", s)
-    return m.group(1) if m else None
+    try:
+        return str(s)[:10]
+    except Exception:
+        return None
 
 
 def _time_score_for_request(r: dict[str, Any], dt1: Any, dt2: Any) -> float:
-    q1 = _parse_date_safe(dt1)
-    q2 = _parse_date_safe(dt2) or q1
-    if not q1:
+    if not dt1 and not dt2:
         return 0.0
-    t1 = _parse_date_safe(r.get("time_min") or r.get("TimeMin"))
-    t2 = _parse_date_safe(r.get("time_max") or r.get("TimeMax"))
-    if not t1 or not t2:
-        return 0.0
-    if t1 <= q1 <= t2 and t1 <= q2 <= t2:
+    t_min = _parse_date_safe(r.get("time_min"))
+    t_max = _parse_date_safe(r.get("time_max"))
+    if not t_min and not t_max:
+        return 0.5  # No coverage info — neutral
+    req_start = _parse_date_safe(dt1) or "0000-01-01"
+    req_end = _parse_date_safe(dt2) or "9999-12-31"
+    covers_start = (not t_min) or (t_min <= req_start)
+    covers_end = (not t_max) or (t_max >= req_end)
+    if covers_start and covers_end:
         return 1.0
-    return -1.0
+    if covers_start or covers_end:
+        return 0.5
+    return 0.0
 
 
-def _post_rank_catalog_results(results: list[dict[str, Any]], *, query: str, dt1: Any = None, dt2: Any = None) -> list[dict[str, Any]]:
+def _is_gridded(r: dict[str, Any]) -> bool:
+    tres = str(r.get("temporal_resolution") or "").lower()
+    sres = str(r.get("spatial_resolution") or "").lower()
+    desc = str(r.get("description") or "").lower()
+    if any(t in tres for t in ("daily", "eight day", "weekly", "monthly", "annual", "8 day")):
+        return True
+    if any(t in sres for t in ("km", "degree", "deg", "°", "min", "arc")):
+        return True
+    if any(t in desc for t in ("gridded", "satellite", "reanalysis")):
+        return True
+    return False
+
+
+def _post_rank_catalog_results(
+    results: list[dict[str, Any]],
+    *,
+    query: str,
+    dt1: Any = None,
+    dt2: Any = None,
+    lat1: Any = None,
+    lat2: Any = None,
+    lon1: Any = None,
+    lon2: Any = None,
+) -> list[dict[str, Any]]:
     family = _field_family_from_query(query)
     ql = (query or "").lower()
     wants_satellite = "satellite" in ql
-    wants_map = any(t in ql for t in ["map", "plot", "gridded", "surface"])
+    wants_gridded = any(t in ql for t in ["map", "plot", "gridded", "surface", "global"])
+    has_roi = all(v is not None for v in (lat1, lat2, lon1, lon2))
 
-    def score(r: dict[str, Any]) -> tuple[float, float]:
-        s = float(r.get("kb_score") or 0.0) * 2.0
-        s += _field_match_score(r, family) * 1.2
-        if wants_satellite and str(r.get("sensor") or "").lower().startswith("satellite"):
-            s += 1.2
-        if wants_map and _looks_map_friendly(r):
+    def score(r: dict[str, Any]) -> tuple[float, float, float]:
+        is_point = _looks_point_like(r)
+        tier = 1.0 if is_point else 0.0
+
+        s = float(r.get("kb_score") or 0.0) * 3.0
+
+        s += _field_match_score(r, family) * 1.5
+
+        if _is_gridded(r):
+            s += 2.5
+        elif is_point:
+            s -= 3.0
+
+        if has_roi:
+            r_lat1 = r.get("lat_min")
+            r_lat2 = r.get("lat_max")
+            r_lon1 = r.get("lon_min")
+            r_lon2 = r.get("lon_max")
+            if all(v is not None for v in (r_lat1, r_lat2, r_lon1, r_lon2)):
+                try:
+                    if _bbox_overlaps(
+                        float(r_lat1), float(r_lat2), float(r_lon1), float(r_lon2),
+                        float(lat1), float(lat2), float(lon1), float(lon2),
+                    ):
+                        s += 2.0
+                    else:
+                        s -= 3.0
+                except Exception:
+                    pass
+            else:
+                # Dataset has no spatial coverage info (NULL bbox) — penalize when
+                # the user specified a region. These are typically cruise datasets
+                # with sparse, unindexed coverage that won't help a regional query.
+                s -= 1.5
+
+        sensor_val = str(r.get("sensor") or "").lower()
+        if wants_satellite:
+            if "satellite" in sensor_val:
+                s += 3.0
+            elif "thermosalinograph" in sensor_val or "elemental analyzer" in sensor_val:
+                s -= 4.0
+
+        if wants_gridded and _looks_map_friendly(r):
             s += 1.0
-        if _looks_point_like(r):
-            s -= 2.0
-        s += _time_score_for_request(r, dt1, dt2) * 1.25
+
+        s += _time_score_for_request(r, dt1, dt2) * 1.5
+
         blob = _candidate_blob(r)
         if family and "climatology" in blob and dt1:
-            s -= 0.6
-        return (-s, str(r.get("table") or ""))
+            s -= 1.5
+
+        return (tier, -s, str(r.get("table") or ""))
 
     return sorted(results or [], key=score)
 
+
 def _fetch_datasets_by_tables(store: SQLServerStore, tables: list[str]) -> list[dict[str, Any]]:
+    """Look up datasets by table names — hits the in-memory cache.
+
+    Tables not present in the cache (e.g. deprecated/stale KB entries) are
+    silently skipped — this prevents stale ChromaDB references from surfacing
+    datasets that no longer exist in the live catalog.
+    """
     if not tables:
         return []
-    # Parameterize the IN list safely
-    params = {f"t{i}": t for i, t in enumerate(tables)}
-    in_clause = ", ".join([f":t{i}" for i in range(len(tables))])
-    sql = text(
-        f"""
-        SELECT
-            DatasetId AS dataset_id,
-            TableName AS [table],
-            ShortName AS [name],
-            DatasetName AS [title],
-            Description AS [description],
-            Make AS [make],
-            Sensor AS [sensor],
-            TimeMin AS time_min,
-            TimeMax AS time_max,
-            LatMin AS lat_min,
-            LatMax AS lat_max,
-            LonMin AS lon_min,
-            LonMax AS lon_max,
-            SpatialResolution AS spatial_resolution,
-            TemporalResolution AS temporal_resolution
-        FROM agent.CatalogDatasets
-        WHERE TableName IN ({in_clause})
-        """
-    )
-    with store.engine.connect() as conn:
-        return [dict(r._mapping) for r in conn.execute(sql, params)]
+    cache = _catalog_cache
+    if not cache.rows:
+        cache.ensure_loaded(store)
+    tables_set = {str(t).strip() for t in tables if t}
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for r in cache.rows:
+        tbl = str(r.get("table_name") or "")
+        if tbl in tables_set and tbl not in seen:
+            seen.add(tbl)
+            out.append(_row_to_dataset_dict(r))
+    # Log any KB tables not found in current catalog (stale entries)
+    missing = tables_set - seen
+    if missing:
+        log.debug("_fetch_datasets_by_tables: %d KB tables not in live catalog: %s",
+                  len(missing), sorted(missing)[:5])
+    return out
+
+
+def _expand_query_text_for_kb(q: str) -> str:
+    """Minimal expansion for KB semantic search — no hardcoded domain synonyms."""
+    return (q or "").strip()
 
 
 def _kb_semantic_table_scores(
@@ -900,11 +877,6 @@ def _kb_semantic_table_scores(
     doc_types: tuple[str, ...] = ("dataset", "variable"),
     k_per_type: int = 250,
 ) -> dict[str, float]:
-    """Return best semantic score per table for the given query.
-
-    We use (1 / (1 + distance)) as a monotonic similarity proxy (higher is better),
-    and take the max score across doc_types (dataset/variable) for each table.
-    """
     if not tables:
         return {}
     qx = _expand_query_text_for_kb(query)
@@ -912,8 +884,6 @@ def _kb_semantic_table_scores(
     out: dict[str, float] = {}
 
     for dt in doc_types:
-        # Try a filtered query first (fast + focused). If the local chromadb version
-        # doesn't support the operator form, fall back to an unfiltered query.
         where_filtered = {"doc_type": dt, "table": {"$in": list(tables_set)}}
         try:
             hits = kb.query(qx, k=min(k_per_type, max(25, len(tables_set) * 2)), where=where_filtered)
@@ -937,485 +907,217 @@ def _kb_semantic_table_scores(
     return out
 
 
-def catalog_search_kb_first(args: CatalogSearchKBFArgs, ctx: dict) -> dict:
-    """Semantic dataset discovery via ChromaKB, then apply ROI / Make / Sensor constraints.
+def _roi_lex_score(r: dict, terms: list[str]) -> int:
+    blob = " ".join([
+        str(r.get("table", "") or r.get("table_name", "")),
+        str(r.get("name", "") or r.get("dataset_short_name", "")),
+        str(r.get("title", "") or r.get("dataset_name", "")),
+        str(r.get("description", "")),
+    ]).lower()
+    return sum(1 for t in terms if t and t in blob)
 
-    The goal is to avoid hard-coded SQL branching for every query: we use the KB to find likely
-    datasets/variables semantically, then we constrain and rank candidates using structured metadata
-    (extents, make, sensor) from the catalog.
-    """
 
-    store = _get_store(ctx)
-    q = (args.query or "").strip()
-    if not q:
-        return {"query": "", "results": [], "total_returned": 0}
-
-    make = args.make
-    sensor = args.sensor
-    if make is None and sensor is None:
-        inf_make, inf_sensor = _infer_make_sensor_from_query(q)
-        make = inf_make
-        sensor = inf_sensor
-
-    use_roi = args.lat1 is not None and args.lat2 is not None and args.lon1 is not None and args.lon2 is not None
-
-    # KB search: query variables (captures scientific terms) and datasets (captures higher-level descriptions).
-    kb_error = None
+def _roi_rank_key(
+    r: dict,
+    *,
+    sem_scores: dict[str, float],
+    terms: list[str],
+    roi_lat1: float,
+    roi_lat2: float,
+    roi_lon1: float,
+    roi_lon2: float,
+    roi_area: float,
+) -> tuple[float, float, float, float]:
+    t = str(r.get("table") or "")
+    sem = float(sem_scores.get(t, 0.0))
+    lex = float(_roi_lex_score(r, terms))
     try:
-        kb = ChromaKB.from_settings()
-        # Use a larger KB candidate pool when ROI constraints are present,
-        # because the ROI filter will eliminate many otherwise-relevant semantic matches.
-        kb_k = int(args.kb_k)
-        if use_roi:
-            kb_k = max(kb_k, min(500, max(100, args.limit * 20)))
-        else:
-            kb_k = max(kb_k, min(200, max(50, args.limit * 10)))
+        ov = _bbox_overlap_area(
+            float(r.get("lat_min")), float(r.get("lat_max")),
+            float(r.get("lon_min")), float(r.get("lon_max")),
+            roi_lat1, roi_lat2, roi_lon1, roi_lon2,
+        )
+    except Exception:
+        ov = 0.0
+    ov_frac = float(ov) / float(roi_area) if roi_area > 0 else 0.0
+    bbox = _bbox_area(r.get("lat_min"), r.get("lat_max"), r.get("lon_min"), r.get("lon_max"))
+    return (-sem, -lex, -ov_frac, bbox)
 
-        var_hits = kb.query(_expand_query_text_for_kb(q), k=kb_k, where={"doc_type": "variable"})
-        ds_hits = kb.query(_expand_query_text_for_kb(q), k=kb_k, where={"doc_type": "dataset"})
-    except Exception as e:
-        kb_error = f"{type(e).__name__}: {e}"
-        var_hits = []
-        ds_hits = []
 
-    # Aggregate signals per table
-    table_score: dict[str, float] = {}
-    table_vars: dict[str, list[str]] = {}
+def _bare_query(q: str) -> str:
+    """Strip sensor/make words from a query to get the bare variable name."""
+    result = (q or "").lower()
+    for word in ("satellite", "model", "assimilation", "observation", "in-situ", "insitu"):
+        result = result.replace(word, "").strip()
+    return result.strip() or q
 
-    def add_hit(table: str, score: float, var_name: Optional[str] = None) -> None:
-        if not table:
-            return
-        table_score[table] = max(table_score.get(table, 0.0), float(score))
-        if var_name:
-            table_vars.setdefault(table, [])
-            if var_name not in table_vars[table]:
-                table_vars[table].append(var_name)
 
-    for h in var_hits:
-        meta = h.get("metadata") or {}
-        dist = h.get("distance")
+def _strip_sensor_words(q: str) -> str:
+    return _bare_query(q)
+
+
+# ---------------------------------------------------------------------------
+# catalog_search_kb_first — KB semantic + cache-backed augmentation
+# ---------------------------------------------------------------------------
+
+def catalog_search_kb_first(args: CatalogSearchKBFArgs, ctx: dict) -> dict:
+    """KB-first semantic dataset discovery with cache-backed SQL augmentation."""
+    cache, store = _get_cache(ctx)
+    kb: ChromaKB | None = ctx.get("kb")
+
+    q = (args.query or "").strip()
+    bare_q = _bare_query(q)
+
+    # 1) SQL-first: search the cache with the bare query
+    sql_rows = _search_rows(cache.rows, bare_q) if bare_q else []
+    sql_datasets = _deduplicate_to_datasets(sql_rows, bare_q, limit=args.limit * 2)
+
+    # 2) KB semantic search
+    kb_tables: list[str] = []
+    kb_scores: dict[str, float] = {}
+    if kb and bare_q:
         try:
-            d = float(dist) if dist is not None else 1e9
-        except Exception:
-            d = 1e9
-        score = 1.0 / (1.0 + d)  # higher is better
-        add_hit(str(meta.get("table") or ""), score, str(meta.get("var_name") or meta.get("variable") or ""))
-
-    for h in ds_hits:
-        meta = h.get("metadata") or {}
-        dist = h.get("distance")
-        try:
-            d = float(dist) if dist is not None else 1e9
-        except Exception:
-            d = 1e9
-        score = 1.0 / (1.0 + d)
-        add_hit(str(meta.get("table") or ""), score, None)
-
-    # If KB recall is empty, fall back to the SQL metadata search so callers still
-    # get useful dataset candidates even when the KB index is incomplete or stale.
-    if not table_score and not (args.lat1 is not None and args.lat2 is not None and args.lon1 is not None and args.lon2 is not None):
-        base = catalog_search(CatalogSearchArgs(query=q, limit=max(int(args.limit or 5) * 6, 20)), ctx)
-        results = list(base.get("results") or [])
-        # Optional Make/Sensor filter (kept lightweight; improves precision for queries like 'model', 'satellite').
-        if make or sensor:
-            results = [r for r in results if _matches_make_sensor(r, make=make, sensor=sensor)]
-        selected = base.get("selected") if isinstance(base.get("selected"), dict) else (results[0] if results else None)
-        alternates = list(base.get("alternates") or [])
-        # Trim to requested limit
-        if args.limit and args.limit > 0:
-            results = results[: int(args.limit)]
-            if alternates:
-                alternates = alternates[: max(0, int(args.limit) - 1)]
-        return {
-            "query": {"q": q, "lat1": args.lat1, "lat2": args.lat2, "lon1": args.lon1, "lon2": args.lon2, "dt1": args.dt1, "dt2": args.dt2, "make": make, "sensor": sensor, "limit": args.limit},
-            "mode": "sql_fallback",
-            "selected": selected,
-            "alternates": alternates,
-            "results": results,
-        }
-
-    # Pull dataset rows for candidate tables
-    if not table_score and args.lat1 is not None and args.lat2 is not None and args.lon1 is not None and args.lon2 is not None:
-            # KB returned no hits for this query, but we still have an ROI. Use an ROI superset from SQL and
-            # rank it semantically (when KB is available) so we don't starve global / broad-coverage products.
-            roi_limit = min(100, max(50, int(args.limit) * 10))
-            roi = catalog_search_roi(
-                CatalogSearchROIArgs(
-                    lat1=args.lat1,
-                    lat2=args.lat2,
-                    lon1=args.lon1,
-                    lon2=args.lon2,
-                    limit=roi_limit,
-                    make=make,
-                    sensor=sensor,
-                    rank_mode=args.roi_rank_mode,
-                ),
-                ctx,
-            )
-            roi_rows = roi.get("results", []) or []
-
-            # Semantic score per table (best over dataset+variable KB docs) if KB is healthy.
-            sem_scores: dict[str, float] = {}
-            if kb_error is None and roi_rows:
-                try:
-                    kb2 = ChromaKB.from_settings()
-                    sem_scores = _kb_semantic_table_scores(
-                        kb2, query=q, tables=[str(r.get("table") or "") for r in roi_rows]
-                    )
-                except Exception:
-                    sem_scores = {}
-
-            # Lightweight lexical fallback (helps when KB has gaps).
-            terms = [t for t in re.split(r"\W+", q.lower()) if t]
-
-            def _lex_score_row(r: dict) -> int:
-                blob = (
-                    " ".join(
-                        [
-                            str(r.get("table", "")),
-                            str(r.get("name", "")),
-                            str(r.get("title", "")),
-                            str(r.get("description", "")),
-                        ]
-                    )
-                ).lower()
-                return sum(1 for t in terms if t and t in blob)
-
-            roi_area = _roi_area(args.lat1, args.lat2, args.lon1, args.lon2)
-            roi_area = roi_area if roi_area > 0 else 1.0
-
-            def _rank_row(r: dict) -> tuple[float, float, float, float]:
-                t = str(r.get("table") or "")
-                sem = float(sem_scores.get(t, 0.0))
-                lex = float(_lex_score_row(r))
-                try:
-                    ov = _bbox_overlap_area(
-                        float(r.get("lat_min")),
-                        float(r.get("lat_max")),
-                        float(r.get("lon_min")),
-                        float(r.get("lon_max")),
-                        args.lat1,
-                        args.lat2,
-                        args.lon1,
-                        args.lon2,
-                    )
-                except Exception:
-                    ov = 0.0
-                ov_frac = float(ov) / float(roi_area)
-                bbox = _bbox_area(r.get("lat_min"), r.get("lat_max"), r.get("lon_min"), r.get("lon_max"))
-                # Higher semantic > higher lexical > better overlap > smaller bbox (tighter) as a last tie-breaker
-                return (-sem, -lex, -ov_frac, bbox)
-
-            roi_rows.sort(key=_rank_row)
-            results = roi_rows[: args.limit]
-            selected = results[0] if results else None
-            alternates = results[1:6] if len(results) > 1 else []
-            return {
-                "tool": "catalog.search_kb_first",
-                "query": {"q": q, "roi": {"lat1": args.lat1, "lat2": args.lat2, "lon1": args.lon1, "lon2": args.lon2}, "dt1": args.dt1, "dt2": args.dt2, "make": make, "sensor": sensor},
-                "make": make,
-                "sensor": sensor,
-                "kb_error": kb_error,
-                "kb_hits": [],
-                "selected": selected,
-                "alternates": alternates,
-                "results": results,
-                "total_returned": len(results),
-                "mode": "roi_semantic_fallback",
-            }
-
-    candidate_tables = sorted(table_score.keys(), key=lambda t: table_score[t], reverse=True)
-
-    # Keep some headroom in case ROI filters remove many
-    candidate_tables = candidate_tables[: min(len(candidate_tables), 500)]
-
-    ds_rows = _fetch_datasets_by_tables(ctx, candidate_tables)
-    by_table = {r.get("table"): r for r in ds_rows if r.get("table")}
-
-    # Apply constraints and build results
-    use_roi = args.lat1 is not None and args.lat2 is not None and args.lon1 is not None and args.lon2 is not None
-    if use_roi:
-        lat1, lat2 = _norm_lat_bounds(args.lat1, args.lat2)
-    results: list[dict[str, Any]] = []
-    for t in candidate_tables:
-        r = by_table.get(t)
-        if not r:
-            continue
-        if not _matches_make_sensor(r.get("make"), make):
-            continue
-        if not _matches_make_sensor(r.get("sensor"), sensor):
-            continue
-        if use_roi and not _bbox_overlaps(
-            r.get("lat_min"), r.get("lat_max"), r.get("lon_min"), r.get("lon_max"), lat1, lat2, args.lon1, args.lon2
-        ):
-            continue
-        r_out = dict(r)
-        r_out["kb_score"] = table_score.get(t, 0.0)
-        if table_vars.get(t):
-            r_out["matched_variables"] = table_vars[t][:5]
-        results.append(r_out)
-
-    # Rank by KB score (descending), then by tighter spatial bbox if ROI is present.
-    def rank(r: dict[str, Any]) -> tuple[float, float]:
-        kb_score = float(r.get("kb_score") or 0.0)
-        if use_roi:
-            try:
-                area = abs(float(r.get("lat_max")) - float(r.get("lat_min"))) * abs(float(r.get("lon_max")) - float(r.get("lon_min")))
-            except Exception:
-                area = 1e18
-        else:
-            area = 0.0
-        # Sort: higher kb_score, lower area
-        return (-kb_score, area)
-
-    results.sort(key=rank)
-
-    # If ROI was requested and the KB candidate pool yields too few matches,
-    # backfill from a fast SQL ROI search (then lightly score by text overlap).
-    if use_roi and len(results) < args.limit:
-        # Semantic ROI backfill: bring in additional ROI-overlapping datasets and rank them semantically
-        # (falling back to light lexical scoring when KB is sparse).
-        try:
-            roi_limit = min(max(args.limit * 10, 50), 100)
-            roi = catalog_search_roi(
-                CatalogSearchROIArgs(
-                    lat1=args.lat1,
-                    lat2=args.lat2,
-                    lon1=args.lon1,
-                    lon2=args.lon2,
-                    limit=roi_limit,
-                    make=make,
-                    sensor=sensor,
-                    rank_mode=args.roi_rank_mode,
-                ),
-                ctx,
-            )
-            existing = {r.get("table") for r in results if r.get("table")}
-            roi_rows = [
-                r for r in (roi.get("results", []) or [])
-                if r.get("table") and r.get("table") not in existing
-            ]
-
-            sem_scores: dict[str, float] = {}
-            if roi_rows:
-                try:
-                    kb2 = ChromaKB.from_settings()
-                    sem_scores = _kb_semantic_table_scores(
-                        kb2, query=q, tables=[str(r.get("table") or "") for r in roi_rows]
-                    )
-                except Exception:
-                    sem_scores = {}
-
-            terms = [t for t in re.split(r"\W+", q.lower()) if t]
-
-            def _lex_score_row(r: dict) -> int:
-                blob = (
-                    " ".join(
-                        [
-                            str(r.get("table", "")),
-                            str(r.get("name", "")),
-                            str(r.get("title", "")),
-                            str(r.get("description", "")),
-                        ]
-                    )
-                ).lower()
-                return sum(1 for t in terms if t and t in blob)
-
-            roi_area = _roi_area(args.lat1, args.lat2, args.lon1, args.lon2)
-            roi_area = roi_area if roi_area > 0 else 1.0
-
-            def _rank_row(r: dict) -> tuple[float, float, float, float]:
-                t = str(r.get("table") or "")
-                sem = float(sem_scores.get(t, 0.0))
-                lex = float(_lex_score_row(r))
-                try:
-                    ov = _bbox_overlap_area(
-                        float(r.get("lat_min")),
-                        float(r.get("lat_max")),
-                        float(r.get("lon_min")),
-                        float(r.get("lon_max")),
-                        args.lat1,
-                        args.lat2,
-                        args.lon1,
-                        args.lon2,
-                    )
-                except Exception:
-                    ov = 0.0
-                ov_frac = float(ov) / float(roi_area)
-                bbox = _bbox_area(r.get("lat_min"), r.get("lat_max"), r.get("lon_min"), r.get("lon_max"))
-                return (-sem, -lex, -ov_frac, bbox)
-
-            roi_rows.sort(key=_rank_row)
-
-            for r in roi_rows:
-                if len(results) >= args.limit:
-                    break
-                t = str(r.get("table") or "")
-                sem = float(sem_scores.get(t, 0.0))
-                lex = float(_lex_score_row(r))
-                if sem <= 0.0 and lex <= 0.0 and len(results) >= max(1, args.limit // 2):
-                    # avoid flooding with low-signal rows once we have some results
+            kb_k = max(50, args.limit * 10)
+            hits = kb.query(_expand_query_text_for_kb(bare_q), k=kb_k)
+            for h in hits or []:
+                meta = h.get("metadata") or {}
+                t = str(meta.get("table") or "")
+                if not t:
                     continue
-                r_out = dict(r)
-                # Use semantic score as a weak KB score for transparency/consistent sorting upstream.
-                r_out["kb_score"] = max(float(r_out.get("kb_score") or 0.0), sem)
-                results.append(r_out)
-        except Exception:
-            pass
+                dist = h.get("distance")
+                try:
+                    d = float(dist) if dist is not None else 1e9
+                except Exception:
+                    d = 1e9
+                s = 1.0 / (1.0 + d)
+                if s > kb_scores.get(t, 0.0):
+                    kb_scores[t] = s
+                    if t not in kb_tables:
+                        kb_tables.append(t)
+        except Exception as e:
+            log.warning("KB search failed: %s", e)
 
-    results = _post_rank_catalog_results(results, query=q, dt1=args.dt1, dt2=args.dt2)
-    results = results[: args.limit]
-    selected = results[0] if results else None
-    alternates = results[1:6] if len(results) > 1 else []
+    # Fetch KB-matched datasets from cache
+    kb_datasets = _fetch_datasets_by_tables(store, kb_tables)
+    for d in kb_datasets:
+        tbl = str(d.get("table") or "")
+        if tbl in kb_scores:
+            d["kb_score"] = kb_scores[tbl]
+
+    # 3) Merge: KB results first (semantic relevance), then SQL augmentation
+    seen: set[str] = set()
+    merged: list[dict[str, Any]] = []
+    for d in kb_datasets:
+        t = str(d.get("table") or "")
+        if t and t not in seen:
+            seen.add(t)
+            merged.append(d)
+    for d in sql_datasets:
+        t = str(d.get("table") or "")
+        if t and t not in seen:
+            seen.add(t)
+            # SQL match score already set as kb_score via _deduplicate_to_datasets
+            merged.append(d)
+
+    if not merged:
+        # Fallback: use sql_datasets directly
+        merged = sql_datasets
+
+    # 4) Make/sensor filter
+    if args.make or args.sensor:
+        merged = [r for r in merged if _matches_make_sensor(r, make=args.make, sensor=args.sensor)]
+
+    # 5) Post-rank
+    merged = _post_rank_catalog_results(
+        merged, query=bare_q, dt1=args.dt1, dt2=args.dt2,
+        lat1=args.lat1, lat2=args.lat2, lon1=args.lon1, lon2=args.lon2,
+    )
+    merged = merged[:args.limit]
+
+    selected = merged[0] if merged else None
+    alternates = merged[1:6] if len(merged) > 1 else []
 
     return {
+        "tool": "catalog.search_kb_first",
         "query": {
-            "q": q,
-            "roi": (
-                {"lat1": args.lat1, "lat2": args.lat2, "lon1": args.lon1, "lon2": args.lon2} if use_roi else None
-            ),
-            "dt1": args.dt1,
-            "dt2": args.dt2,
-            "make": make,
-            "sensor": sensor,
+            "q": q, "lat1": args.lat1, "lat2": args.lat2,
+            "lon1": args.lon1, "lon2": args.lon2,
+            "dt1": args.dt1, "dt2": args.dt2,
+            "make": args.make, "sensor": args.sensor, "limit": args.limit,
         },
         "selected": selected,
         "alternates": alternates,
-        "results": results,
-        "total_returned": len(results),
+        "results": merged,
     }
 
 
-def catalog_search_variables(args: CatalogSearchVariablesArgs, ctx: dict) -> dict:
-    """Search variables across the cached catalog.
+# ---------------------------------------------------------------------------
+# catalog_search_variables — cache-backed
+# ---------------------------------------------------------------------------
 
-    This is the core tool for resolving variable names when users provide only
-    scientific terms (e.g., "chlorophyll") or abbreviations (e.g., "sst").
-    """
-    store = _get_store(ctx)
+def catalog_search_variables(args: CatalogSearchVariablesArgs, ctx: dict) -> dict:
+    cache, _ = _get_cache(ctx)
     q = (args.query or "").strip()
     if not q:
-        return {"results": []}
-
-    table_hint = (args.table_hint or "").strip() or None
-
-    like_full = f"%{q}%"
-    tokens = _expand_tokens(_tokenize(q))
-
-    # Variable search fields
-    fields = [
-        "v.VarName",
-        "v.LongName",
-        "v.Keywords",
-        "v.Unit",
-        "d.ShortName",
-        "d.DatasetName",
-    ]
-
-    where_tokens_and, token_params = _build_token_where(tokens=tokens, fields=fields, param_prefix="t")
-
-    base_where = (
-        f"({where_tokens_and})" if where_tokens_and else "(" + " OR ".join([f"{f} LIKE :like_full" for f in fields]) + ")"
-    )
-    if table_hint:
-        base_where = base_where + " AND v.TableName = :table_hint"
-
-    sql = text(
-        f"""
-        SELECT TOP (:limit)
-            v.TableName AS [table],
-            v.VarName AS [variable],
-            v.LongName AS [long_name],
-            v.Keywords AS [keywords],
-            v.Unit AS [unit],
-            d.DatasetId AS [dataset_id],
-            d.ShortName AS [dataset_short_name],
-            d.DatasetName AS [dataset_title]
-        FROM agent.CatalogVariables v
-        LEFT JOIN agent.CatalogDatasets d
-            ON d.TableName = v.TableName
-        WHERE {base_where}
-        ORDER BY
-            CASE
-                WHEN v.VarName = :q THEN 0
-                WHEN v.LongName = :q THEN 1
-                WHEN v.VarName LIKE :like_full THEN 2
-                WHEN v.LongName LIKE :like_full THEN 3
-                ELSE 4
-            END,
-            d.UpdatedAt DESC,
-            v.VarName
-        """
-    )
-
-    with store.engine.begin() as conn:
-        params = {"limit": args.limit, "like_full": like_full, "q": q, "table_hint": table_hint}
-        params.update(token_params)
-        rows = conn.execute(sql, params).mappings().all()
-
-        # Fallback: if token-AND yields no results, broaden to OR-over-full-like.
-        if not rows and where_tokens_and:
-            where_or = " OR ".join([f"{f} LIKE :like_full" for f in fields])
-            if table_hint:
-                where_or = f"({where_or}) AND v.TableName = :table_hint"
-            sql2 = text(
-                f"""
-                SELECT TOP (:limit)
-                    v.TableName AS [table],
-                    v.VarName AS [variable],
-                    v.LongName AS [long_name],
-                    v.Unit AS [unit],
-                    d.DatasetId AS [dataset_id],
-                    d.ShortName AS [dataset_short_name],
-                    d.DatasetName AS [dataset_title]
-                FROM agent.CatalogVariables v
-                LEFT JOIN agent.CatalogDatasets d
-                    ON d.TableName = v.TableName
-                WHERE {where_or}
-                ORDER BY
-                    CASE
-                        WHEN v.VarName = :q THEN 0
-                        WHEN v.LongName = :q THEN 1
-                        ELSE 2
-                    END,
-                    d.UpdatedAt DESC,
-                    v.VarName
-                """
-            )
-            rows = conn.execute(sql2, {"limit": args.limit, "like_full": like_full, "q": q, "table_hint": table_hint}).mappings().all()
+        return {"results": [], "selected": None, "alternates": [], "total_returned": 0}
 
     ql = q.lower()
+    table_hint = (args.table_hint or "").strip() or None
+
+    rows = cache.rows
+    if table_hint:
+        rows = [r for r in rows if str(r.get("table_name") or "").strip() == table_hint]
+
+    matched = []
+    for r in rows:
+        var = str(r.get("variable") or "").lower()
+        ln = str(r.get("long_name") or "").lower()
+        kw = str(r.get("keywords") or "").lower()
+        ds_name = str(r.get("dataset_name") or "").lower()
+        ds_short = str(r.get("dataset_short_name") or "").lower()
+        if ql in var or ql in ln or ql in kw or ql in ds_name or ql in ds_short:
+            matched.append(r)
 
     def _vreason(var: str | None, long_name: str | None) -> str:
         v = (var or "").lower()
         ln = (long_name or "").lower()
         if v == ql or ln == ql:
             return "exact"
-        if ql and (ql in v or ql in ln):
+        if ql in v or ql in ln:
             return "partial"
         return "metadata"
 
-    results: list[dict] = []
-    for r in rows:
+    def _vscore(r: dict) -> float:
+        var = str(r.get("variable") or "").lower()
+        ln = str(r.get("long_name") or "").lower()
+        s = 0.0
+        if var == ql: s += 5.0
+        elif ql in var: s += 3.0
+        if ln == ql: s += 4.0
+        elif ql in ln: s += 2.0
+        return s
+
+    matched.sort(key=lambda r: -_vscore(r))
+    matched = matched[:args.limit]
+
+    results = []
+    for r in matched:
         var = r.get("variable")
         ln = r.get("long_name")
-        results.append(
-            {
-                "table": r.get("table"),
-                "variable": var,
-                "long_name": ln,
-                "keywords": r.get("keywords"),
-                "unit": r.get("unit"),
-                "dataset_id": r.get("dataset_id"),
-                "dataset_short_name": r.get("dataset_short_name"),
-                "dataset_title": r.get("dataset_title"),
-                "reason": _vreason(var, ln),
-            }
-        )
+        results.append({
+            "table": r.get("table_name"),
+            "variable": var,
+            "long_name": ln,
+            "keywords": r.get("keywords"),
+            "unit": r.get("unit"),
+            "dataset_id": r.get("dataset_id"),
+            "dataset_short_name": r.get("dataset_short_name"),
+            "dataset_title": r.get("dataset_name"),
+            "reason": _vreason(var, ln),
+        })
 
     selected = results[0] if results else None
     alternates = results[1:6] if len(results) > 1 else []
-
     return {
         "query": q,
         "table_hint": table_hint,
@@ -1425,222 +1127,162 @@ def catalog_search_variables(args: CatalogSearchVariablesArgs, ctx: dict) -> dic
         "total_returned": len(results),
     }
 
+
+# ---------------------------------------------------------------------------
+# dataset_metadata — still uses SQL (needs full metadata, References, etc.)
+# ---------------------------------------------------------------------------
+
 def dataset_metadata(args: DatasetMetadataArgs, ctx: dict) -> dict:
     store = _get_store(ctx)
     table = args.table.strip()
+    # References still live in agent.CatalogDatasetReferences — keep this SQL
     with store.engine.begin() as conn:
-        ds = conn.execute(text("SELECT * FROM agent.CatalogDatasets WHERE TableName=:t"), {"t": table}).mappings().first()
-        vars_ = conn.execute(text("SELECT * FROM agent.CatalogVariables WHERE TableName=:t ORDER BY VarName"), {"t": table}).mappings().all()
-        refs = conn.execute(text("SELECT ReferenceId, Reference FROM agent.CatalogDatasetReferences WHERE TableName=:t ORDER BY ReferenceId"), {"t": table}).mappings().all()
+        refs = conn.execute(
+            text("SELECT ReferenceId, Reference FROM agent.CatalogDatasetReferences WHERE TableName=:t ORDER BY ReferenceId"),
+            {"t": table}
+        ).mappings().all()
 
-    if not ds:
+    cache, _ = _get_cache(ctx)
+    rows = [r for r in cache.rows if str(r.get("table_name") or "").strip() == table]
+    if not rows:
         return {"metadata": []}
 
-    # Return in a style similar to pycmap catalog tool output (list with one dict)
-    md = dict(ds)
-    md["References"] = [dict(x) for x in refs] if refs else []
-    md["Variables"] = [dict(v) for v in vars_] if vars_ else []
+    # Build dataset-level metadata from first row + all variables
+    first = rows[0]
+    variables = [
+        {"variable": r.get("variable"), "long_name": r.get("long_name"), "unit": r.get("unit")}
+        for r in sorted(rows, key=lambda r: str(r.get("variable") or ""))
+    ]
+    md = {
+        "TableName": table,
+        "DatasetId": first.get("dataset_id"),
+        "ShortName": first.get("dataset_short_name"),
+        "DatasetName": first.get("dataset_name"),
+        "Description": first.get("description"),
+        "Make": first.get("make"),
+        "Sensor": first.get("sensor"),
+        "SpatialResolution": first.get("spatial_resolution"),
+        "TemporalResolution": first.get("temporal_resolution"),
+        "LatMin": first.get("lat_min"),
+        "LatMax": first.get("lat_max"),
+        "LonMin": first.get("lon_min"),
+        "LonMax": first.get("lon_max"),
+        "DepthMin": first.get("depth_min"),
+        "DepthMax": first.get("depth_max"),
+        "References": [dict(x) for x in refs] if refs else [],
+        "Variables": variables,
+    }
     return {"metadata": [md]}
 
+
+# ---------------------------------------------------------------------------
+# list_variables — cache-backed
+# ---------------------------------------------------------------------------
+
 def list_variables(args: ListVariablesArgs, ctx: dict) -> dict:
-    store = _get_store(ctx)
+    cache, _ = _get_cache(ctx)
     table = args.table.strip()
-    with store.engine.begin() as conn:
-        rows = conn.execute(text("SELECT VarName, LongName, Unit FROM agent.CatalogVariables WHERE TableName=:t ORDER BY VarName"), {"t": table}).mappings().all()
-    out=[{"variable": r["VarName"], "long_name": r.get("LongName"), "unit": r.get("Unit")} for r in rows]
+    rows = [r for r in cache.rows if str(r.get("table_name") or "").strip() == table]
+    rows.sort(key=lambda r: str(r.get("variable") or ""))
+    out = [
+        {"variable": r.get("variable"), "long_name": r.get("long_name"), "unit": r.get("unit")}
+        for r in rows
+    ]
     return {"variables": out}
 
 
-def count_datasets(args: CountDatasetsArgs, ctx: dict) -> dict:
-    store = _get_store(ctx)
-    with store.engine.begin() as conn:
-        n = conn.execute(text("SELECT COUNT(1) AS n FROM agent.CatalogDatasets")).mappings().first()
-    return {"count": int(n["n"]) if n and "n" in n else 0}
+# ---------------------------------------------------------------------------
+# count_datasets — cache-backed
+# ---------------------------------------------------------------------------
 
+def count_datasets(args: CountDatasetsArgs, ctx: dict) -> dict:
+    cache, _ = _get_cache(ctx)
+    n = len({r.get("dataset_id") for r in cache.rows if r.get("dataset_id") is not None})
+    return {"count": n}
+
+
+# ---------------------------------------------------------------------------
+# dataset_summary — cache-backed
+# ---------------------------------------------------------------------------
 
 def dataset_summary(args: DatasetSummaryArgs, ctx: dict) -> dict:
-    """Return a compact overview for one *or more* datasets.
-
-    This is meant to make 'summarize dataset X' possible in a single tool call.
-    - If args.query exactly matches a dataset (table/short name/title), return that dataset as `selected`
-      and also as the only item in `matches`.
-    - If the query is not an exact match, perform a LIKE search and return up to `max_matches` dataset
-      summaries in `matches`. In this case, `selected` is set to the first (best-ranked) match so the
-      assistant can still produce a summary without failing.
-    """
-    store = _get_store(ctx)
+    cache, store = _get_cache(ctx)
     q = (args.query or "").strip()
     if not q:
         return {"matches": [], "selected": None, "total_matches": 0, "truncated": False}
 
     max_vars = int(args.max_variables)
-    max_matches = int(getattr(args, "max_matches", 5))
-    like_full = f"%{q}%"
-    fields = [
-        "TableName",
-        "ShortName",
-        "DatasetName",
-        "Description",
-        "Keywords",
-    ]
-    tokens = _expand_tokens(_tokenize(q))
-    where_tokens_and, token_params = _build_token_where(tokens=tokens, fields=fields, param_prefix="t")
+    max_matches = int(getattr(args, "max_matches", 10))
 
-    def _fetch_vars(conn, table: str):
-        if max_vars <= 0:
-            return []
-        try:
-            rows = conn.execute(
-                text(
-                    """
-                    SELECT TOP (:n) VarName, LongName, Unit
-                    FROM agent.CatalogVariables
-                    WHERE TableName=:t
-                    ORDER BY VarName
-                    """
-                ),
-                {"t": table, "n": max_vars},
-            ).mappings().all()
-        except Exception:
-            # Some deployments may not have variable cache populated yet.
-            return []
-        return [
-            {"variable": v.get("VarName"), "long_name": v.get("LongName"), "unit": v.get("Unit")}
-            for v in (rows or [])
+    # Exact match: table name or dataset short/long name
+    ql = q.lower()
+    exact_tables: list[str] = []
+    seen_for_exact: set[str] = set()
+    for r in cache.rows:
+        tbl = str(r.get("table_name") or "")
+        ds_short = str(r.get("dataset_short_name") or "").lower()
+        ds_name = str(r.get("dataset_name") or "").lower()
+        if tbl and tbl not in seen_for_exact:
+            if ql == tbl.lower() or ql == ds_short or ql == ds_name:
+                exact_tables.append(tbl)
+                seen_for_exact.add(tbl)
+
+    def _build_match(table: str) -> dict | None:
+        rows = [r for r in cache.rows if str(r.get("table_name") or "").strip() == table]
+        if not rows:
+            return None
+        first = rows[0]
+        vars_sorted = sorted(rows, key=lambda r: str(r.get("variable") or ""))
+        variables = [
+            {"variable": r.get("variable"), "long_name": r.get("long_name"), "unit": r.get("unit")}
+            for r in vars_sorted[:max_vars]
         ]
+        # References still from SQL
+        try:
+            with store.engine.begin() as conn:
+                refs = conn.execute(
+                    text("SELECT ReferenceId, Reference FROM agent.CatalogDatasetReferences WHERE TableName=:t ORDER BY ReferenceId"),
+                    {"t": table}
+                ).mappings().all()
+            refs_list = [dict(r) for r in refs]
+        except Exception:
+            refs_list = []
 
-    def _fetch_refs(conn, table: str):
-        # Keep references small; the assistant can request more if needed.
-        rows = conn.execute(
-            text(
-                """
-                SELECT TOP 10 ReferenceId, Reference
-                FROM agent.CatalogDatasetReferences
-                WHERE TableName=:t
-                ORDER BY ReferenceId
-                """
-            ),
-            {"t": table},
-        ).mappings().all()
-        return [dict(r) for r in (rows or [])]
-
-    def _pack(ds_row, vars_list, refs_list):
         return {
-            "table": ds_row.get("TableName"),
-            "dataset_id": ds_row.get("DatasetId"),
-            "short_name": ds_row.get("ShortName"),
-            "title": ds_row.get("DatasetName"),
-            "description": ds_row.get("Description"),
-            "keywords": ds_row.get("Keywords"),
-            "source": ds_row.get("Source"),
-            "spatial_resolution": ds_row.get("SpatialResolution"),
-            "temporal_resolution": ds_row.get("TemporalResolution"),
-            "time_coverage_start": ds_row.get("TimeCoverageStart"),
-            "time_coverage_end": ds_row.get("TimeCoverageEnd"),
-            "lat_min": ds_row.get("LatMin"),
-            "lat_max": ds_row.get("LatMax"),
-            "lon_min": ds_row.get("LonMin"),
-            "lon_max": ds_row.get("LonMax"),
-            "depth_min": ds_row.get("DepthMin"),
-            "depth_max": ds_row.get("DepthMax"),
-            "updated_at": ds_row.get("UpdatedAt"),
-            "variables": vars_list,
+            "table": table,
+            "dataset_id": first.get("dataset_id"),
+            "short_name": first.get("dataset_short_name"),
+            "description": first.get("description"),
+            "keywords": first.get("keywords"),
+            "source": first.get("data_source"),
+            "spatial_resolution": first.get("spatial_resolution"),
+            "temporal_resolution": first.get("temporal_resolution"),
+            "lat_min": first.get("lat_min"),
+            "lat_max": first.get("lat_max"),
+            "lon_min": first.get("lon_min"),
+            "lon_max": first.get("lon_max"),
+            "depth_min": first.get("depth_min"),
+            "depth_max": first.get("depth_max"),
+            "variables": variables,
             "references": refs_list,
         }
 
-    with store.engine.begin() as conn:
-        # 1) Exact match by table/short name/title.
-        exact = conn.execute(
-            text(
-                """
-                SELECT TOP 1 *
-                FROM agent.CatalogDatasets
-                WHERE TableName = :q OR ShortName = :q OR DatasetName = :q
-                """
-            ),
-            {"q": q},
-        ).mappings().first()
+    if exact_tables:
+        matches = [m for t in exact_tables if (m := _build_match(t)) is not None]
+        selected = matches[0] if matches else None
+        return {"selected": selected, "matches": matches, "total_matches": len(matches), "truncated": False}
 
-        if exact:
-            table = exact.get("TableName")
-            vars_ = _fetch_vars(conn, table)
-            refs = _fetch_refs(conn, table)
-            selected = _pack(exact, vars_, refs)
-            return {"selected": selected, "matches": [selected], "total_matches": 1, "truncated": False}
+    # Fuzzy match: search all fields, deduplicate by table
+    matched_rows = _search_rows(cache.rows, q)
+    datasets = _deduplicate_to_datasets(matched_rows, q, limit=max_matches)
+    total_matches = len(_deduplicate_to_datasets(matched_rows, q, limit=10000))
+    truncated = total_matches > max_matches
 
-        # 2) Fallback: LIKE search across common metadata fields.
-        # Prefer AND-over-tokens for multi-token queries; fall back to OR-over-full-like.
-        where_and = where_tokens_and
-        where_or = " OR ".join([f"{f} LIKE :like_full" for f in fields])
-        where_sql_count = f"({where_and})" if where_and else f"({where_or})"
-
-        total_row = conn.execute(
-            text(
-                f"""
-                SELECT COUNT(1) AS n
-                FROM agent.CatalogDatasets
-                WHERE {where_sql_count}
-                """
-            ),
-            {"like_full": like_full, **token_params},
-        ).mappings().first()
-        total_matches = int(total_row["n"]) if total_row and "n" in total_row else 0
-
-        where_sql = f"({where_and})" if where_and else f"({where_or})"
-
-        rows = conn.execute(
-            text(
-                f"""
-                SELECT TOP (:limit) *
-                FROM agent.CatalogDatasets
-                WHERE {where_sql}
-                ORDER BY
-                    CASE
-                        WHEN TableName = :q THEN 0
-                        WHEN ShortName = :q THEN 1
-                        WHEN DatasetName = :q THEN 2
-                        WHEN ShortName LIKE :like_full THEN 3
-                        WHEN DatasetName LIKE :like_full THEN 4
-                        WHEN TableName LIKE :like_full THEN 5
-                        ELSE 6
-                    END,
-                    UpdatedAt DESC
-                """
-            ),
-            {"limit": max_matches, "q": q, "like_full": like_full, **token_params},
-        ).mappings().all()
-
-        # Fallback: if token-AND yields nothing, broaden to OR-over-full-like.
-        if not rows and where_and:
-            rows = conn.execute(
-                text(
-                    f"""
-                    SELECT TOP (:limit) *
-                    FROM agent.CatalogDatasets
-                    WHERE ({where_or})
-                    ORDER BY
-                        CASE
-                            WHEN TableName = :q THEN 0
-                            WHEN ShortName = :q THEN 1
-                            WHEN DatasetName = :q THEN 2
-                            ELSE 3
-                        END,
-                        UpdatedAt DESC
-                    """
-                ),
-                {"limit": max_matches, "q": q, "like_full": like_full},
-            ).mappings().all()
-
-        if not rows:
-            return {"matches": [], "selected": None, "total_matches": 0, "truncated": False}
-
-        matches = []
-        for r in rows:
-            table = r.get("TableName")
-            vars_ = _fetch_vars(conn, table)
-            refs = _fetch_refs(conn, table)
-            matches.append(_pack(r, vars_, refs))
-
-    # Pick the top-ranked match as selected so the LLM doesn't "give up".
+    matches = [m for d in datasets if (m := _build_match(str(d.get("table") or ""))) is not None]
     selected = matches[0] if matches else None
-    return {"selected": selected, "matches": matches, "total_matches": total_matches if total_matches else (len(matches) if matches else 0), "truncated": bool(total_matches and total_matches > len(matches))}
+    return {
+        "selected": selected,
+        "matches": matches,
+        "total_matches": total_matches,
+        "truncated": truncated,
+    }
