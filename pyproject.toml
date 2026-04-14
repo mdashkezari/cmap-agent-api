@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "cmap-agent"
-version = "0.2.52"
+version = "0.2.63"
 description = "Agentic interface for Simons CMAP (tool-calling + pycmap + custom plotting)"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -51,9 +51,7 @@ geo = [
 
 [project.scripts]
 cmap-agent = "cmap_agent.cli.main:main"
-cmap-agent-sync = "cmap_agent.sync.catalog_sync:main"
 
-cmap-agent-sync-catalog = "cmap_agent.sync.metadata_sync:main"
 cmap-agent-sync-kb = "cmap_agent.sync.kb_sync:main"
 
 [tool.hatch.build.targets.wheel]

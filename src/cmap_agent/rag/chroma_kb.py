@@ -138,7 +138,7 @@ class ChromaKB:
         kwargs: dict[str, Any] = {
             "query_embeddings": [qemb],
             "n_results": k,
-            "include": ["documents", "metadatas", "distances", "ids"],
+            "include": ["documents", "metadatas", "distances"],
         }
         if where:
             kwargs["where"] = where

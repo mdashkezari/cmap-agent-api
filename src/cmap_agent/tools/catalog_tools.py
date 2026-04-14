@@ -1135,17 +1135,23 @@ def catalog_search_variables(args: CatalogSearchVariablesArgs, ctx: dict) -> dic
 def dataset_metadata(args: DatasetMetadataArgs, ctx: dict) -> dict:
     store = _get_store(ctx)
     table = args.table.strip()
-    # References still live in agent.CatalogDatasetReferences — keep this SQL
-    with store.engine.begin() as conn:
-        refs = conn.execute(
-            text("SELECT ReferenceId, Reference FROM agent.CatalogDatasetReferences WHERE TableName=:t ORDER BY ReferenceId"),
-            {"t": table}
-        ).mappings().all()
-
     cache, _ = _get_cache(ctx)
     rows = [r for r in cache.rows if str(r.get("table_name") or "").strip() == table]
     if not rows:
         return {"metadata": []}
+
+    # Fetch references from dbo.tblDataset_References via Dataset_ID
+    ds_id = rows[0].get("dataset_id")
+    refs = []
+    if ds_id is not None:
+        try:
+            with store.engine.begin() as conn:
+                refs = conn.execute(
+                    text("SELECT TOP 20 Reference_ID AS ReferenceId, Reference FROM dbo.tblDataset_References WHERE Dataset_ID=:ds_id ORDER BY Reference_ID"),
+                    {"ds_id": int(ds_id)}
+                ).mappings().all()
+        except Exception:
+            refs = []
 
     # Build dataset-level metadata from first row + all variables
     first = rows[0]
@@ -1237,16 +1243,19 @@ def dataset_summary(args: DatasetSummaryArgs, ctx: dict) -> dict:
             {"variable": r.get("variable"), "long_name": r.get("long_name"), "unit": r.get("unit")}
             for r in vars_sorted[:max_vars]
         ]
-        # References still from SQL
-        try:
-            with store.engine.begin() as conn:
-                refs = conn.execute(
-                    text("SELECT ReferenceId, Reference FROM agent.CatalogDatasetReferences WHERE TableName=:t ORDER BY ReferenceId"),
-                    {"t": table}
-                ).mappings().all()
-            refs_list = [dict(r) for r in refs]
-        except Exception:
-            refs_list = []
+        # References from dbo.tblDataset_References via Dataset_ID
+        ds_id = rows[0].get("dataset_id") if rows else None
+        refs_list = []
+        if ds_id is not None:
+            try:
+                with store.engine.begin() as conn:
+                    refs = conn.execute(
+                        text("SELECT TOP 20 Reference_ID AS ReferenceId, Reference FROM dbo.tblDataset_References WHERE Dataset_ID=:ds_id ORDER BY Reference_ID"),
+                        {"ds_id": int(ds_id)}
+                    ).mappings().all()
+                refs_list = [dict(r) for r in refs]
+            except Exception:
+                refs_list = []
 
         return {
             "table": table,

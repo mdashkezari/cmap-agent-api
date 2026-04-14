@@ -1,3 +1,15 @@
+"""kb_sync — build/refresh the Chroma KB directly from CMAP metadata tables.
+
+Data is sourced from:
+  - udfCatalog()         — all variables with dataset metadata, keywords, coverage
+  - tblDataset_References — citations/references per dataset
+
+No intermediate agent.Catalog* tables are used. The script can be run
+at any time to pick up new datasets or updated metadata without requiring
+a separate catalog sync step first.
+
+Entry point: cmap-agent-sync-kb  (see pyproject.toml [project.scripts])
+"""
 from __future__ import annotations
 
 import argparse
@@ -13,24 +25,66 @@ from cmap_agent.rag.chroma_kb import ChromaKB
 URL_RE = re.compile(r"https?://\S+", re.I)
 DOI_RE = re.compile(r"(10\.\d{4,9}/[^\s]+)", re.I)
 
+# ---------------------------------------------------------------------------
+# udfCatalog column → kb_sync internal key mapping
+# udfCatalog columns (after our SELECT aliases):
+#   Variable, Table_Name, Long_Name, Unit, Make, Sensor, Process_Level,
+#   Study_Domain, Temporal_Resolution, Spatial_Resolution,
+#   Time_Min, Time_Max, Lat_Min, Lat_Max, Lon_Min, Lon_Max, Depth_Min, Depth_Max,
+#   Dataset_Name (long title), Dataset_Short_Name (short name),
+#   Data_Source, Distributor, Dataset_Description, Acknowledgement,
+#   Dataset_ID, ID (var id), Keywords
+# ---------------------------------------------------------------------------
 
+_UDF_SQL = """
+SELECT
+    Table_Name          AS TableName,
+    Dataset_ID          AS DatasetId,
+    Dataset_Name        AS DatasetName,
+    Dataset_Short_Name  AS ShortName,
+    Make                AS Make,
+    Sensor              AS Sensor,
+    Process_Level       AS ProcessLevel,
+    Study_Domain        AS StudyDomain,
+    Temporal_Resolution AS TemporalResolution,
+    Spatial_Resolution  AS SpatialResolution,
+    Time_Min            AS TimeMin,
+    Time_Max            AS TimeMax,
+    Lat_Min             AS LatMin,
+    Lat_Max             AS LatMax,
+    Lon_Min             AS LonMin,
+    Lon_Max             AS LonMax,
+    Depth_Min           AS DepthMin,
+    Depth_Max           AS DepthMax,
+    Variable            AS VarName,
+    Long_Name           AS LongName,
+    Unit                AS Unit,
+    Keywords            AS Keywords,
+    Data_Source         AS DataSource,
+    Distributor         AS Distributor,
+    Dataset_Description AS Description,
+    Acknowledgement     AS Acknowledgement
+FROM udfCatalog()
+"""
+
+
+# ---------------------------------------------------------------------------
+# Text splitting (unchanged)
+# ---------------------------------------------------------------------------
 
 def _split_text(text: str, max_chars: int = 20_000):
     """Yield chunks of `text` no longer than `max_chars`.
 
-    This is a conservative, dependency-free splitter designed to keep
-    embedding inputs under typical model context limits (~8k tokens).
-    It prefers paragraph boundaries, then sentence boundaries, then words.
+    Prefers paragraph boundaries, then sentence boundaries, then words.
+    Keeps embedding inputs under typical model context limits (~8k tokens).
     """
     if text is None:
         return
-    # Normalize whitespace a bit but keep paragraph structure
     text = str(text).replace("\r\n", "\n").replace("\r", "\n")
     text = re.sub(r"\n{3,}", "\n\n", text).strip()
     if not text:
         return
 
-    # Be conservative even if caller passes a larger number
     max_chars = int(max(1_000, min(max_chars, 20_000)))
 
     if len(text) <= max_chars:
@@ -47,19 +101,15 @@ def _split_text(text: str, max_chars: int = 20_000):
         buf = ""
 
     for p in paras:
-        # If a single paragraph is too large, split further.
         if len(p) > max_chars:
-            # Split on sentence-ish boundaries; if that still fails, split on words.
             parts = re.split(r"(?<=[\.!\?])\s+", p)
             if len(parts) == 1:
                 parts = p.split()
-
             cur = ""
             for part in parts:
                 part = part.strip()
                 if not part:
                     continue
-                # For word-based splitting, add a space
                 sep = " " if cur else ""
                 candidate = f"{cur}{sep}{part}"
                 if len(candidate) <= max_chars:
@@ -69,7 +119,6 @@ def _split_text(text: str, max_chars: int = 20_000):
                         yield cur.strip()
                         cur = part
                     else:
-                        # extreme fallback: hard cut
                         for i in range(0, len(part), max_chars):
                             yield part[i:i+max_chars].strip()
                         cur = ""
@@ -77,7 +126,6 @@ def _split_text(text: str, max_chars: int = 20_000):
                 yield cur.strip()
             continue
 
-        # Normal paragraph accumulation
         if not buf:
             buf = p
         elif len(buf) + 2 + len(p) <= max_chars:
@@ -90,11 +138,15 @@ def _split_text(text: str, max_chars: int = 20_000):
         yield buf.strip()
 
 
+# ---------------------------------------------------------------------------
+# Metadata helpers (unchanged)
+# ---------------------------------------------------------------------------
+
 def _join_list(values: list[str], limit: int = 30) -> str | None:
     """Return a compact, de-duplicated string for list-like metadata.
 
-    Chroma metadata values must be scalar (no list/dict). We keep order-stable
-    joins so the same input produces the same stored value.
+    ChromaDB metadata values must be scalar (no list/dict). Order-stable
+    joins ensure the same input produces the same stored value.
     """
     if not values:
         return None
@@ -112,14 +164,24 @@ def _join_list(values: list[str], limit: int = 30) -> str | None:
             break
     return "; ".join(out) if out else None
 
+
+# ---------------------------------------------------------------------------
+# Document builders
+# ---------------------------------------------------------------------------
+
 def _dataset_doc(row: dict[str, Any], refs: list[str], vars_: list[dict[str, Any]]) -> tuple[str, dict[str, Any]]:
+    """Build the ChromaDB document text and metadata for a dataset."""
     title = row.get("DatasetName") or row.get("ShortName") or row.get("TableName")
-    parts=[]
-    def add(k,v):
-        if v is None: return
-        s=str(v).strip()
-        if not s: return
+    parts = []
+
+    def add(k, v):
+        if v is None:
+            return
+        s = str(v).strip()
+        if not s:
+            return
         parts.append(f"{k}: {s}")
+
     add("Dataset", title)
     add("ShortName", row.get("ShortName"))
     add("TableName", row.get("TableName"))
@@ -135,10 +197,6 @@ def _dataset_doc(row: dict[str, Any], refs: list[str], vars_: list[dict[str, Any
     add("StudyDomain", row.get("StudyDomain"))
     add("TemporalResolution", row.get("TemporalResolution"))
     add("SpatialResolution", row.get("SpatialResolution"))
-    add("Units", row.get("Units"))
-    add("Comments", row.get("Comments"))
-    add("Regions", row.get("Regions"))
-    # Coverage
     add("TimeMin", row.get("TimeMin"))
     add("TimeMax", row.get("TimeMax"))
     add("LatMin", row.get("LatMin"))
@@ -148,18 +206,20 @@ def _dataset_doc(row: dict[str, Any], refs: list[str], vars_: list[dict[str, Any
     add("DepthMin", row.get("DepthMin"))
     add("DepthMax", row.get("DepthMax"))
 
-    # Variables (compact)
     if vars_:
         parts.append("Variables:")
         for v in vars_[:80]:
-            vn=v.get("VarName")
-            ln=v.get("LongName")
-            unit=v.get("Unit")
-            parts.append(f"  - {vn} | {ln or ''} | {unit or ''}".strip())
+            vn = v.get("VarName")
+            ln = v.get("LongName")
+            unit = v.get("Unit")
+            kw = v.get("Keywords")
+            line = f"  - {vn} | {ln or ''} | {unit or ''}"
+            if kw:
+                line += f" | {kw}"
+            parts.append(line.strip())
 
-    # References
-    urls=[]
-    dois=[]
+    urls = []
+    dois = []
     if refs:
         parts.append("References:")
         for r in refs[:50]:
@@ -175,88 +235,119 @@ def _dataset_doc(row: dict[str, Any], refs: list[str], vars_: list[dict[str, Any
         "short_name": row.get("ShortName"),
         "make": row.get("Make") or "",
         "sensor": row.get("Sensor") or "",
-        # Chroma metadata values must be scalar (no list/dict).
         "reference_urls": _join_list(urls, limit=30),
         "reference_dois": _join_list(dois, limit=30),
         "reference_url_count": len({u for u in urls if u}),
-        "source": "cmap_sql_cache",
+        "source": "udfCatalog",
         "title": title,
     }
     return "\n".join(parts), meta
 
+
 def _reference_docs(table: str, dataset_id: int | None, refs: list[dict[str, Any]]) -> list[tuple[str, dict[str, Any], str]]:
-    out=[]
+    """Build individual ChromaDB documents for each dataset reference/citation."""
+    out = []
     for r in refs:
-        rid = r.get("ReferenceId")
+        rid = r.get("Reference_ID")
         txt = (r.get("Reference") or "").strip()
         if not txt:
             continue
-        urls=URL_RE.findall(txt)
-        dois=DOI_RE.findall(txt)
-        doc_id=f"ref:{table}:{rid}"
-        meta={
-            "doc_type":"dataset_reference",
+        urls = URL_RE.findall(txt)
+        dois = DOI_RE.findall(txt)
+        doc_id = f"ref:{table}:{rid}"
+        meta = {
+            "doc_type": "dataset_reference",
             "table": table,
             "dataset_id": dataset_id,
             "reference_id": rid,
-            # Chroma metadata values must be scalar.
             "reference_urls": _join_list(urls, limit=10),
             "reference_dois": _join_list(dois, limit=10),
-            "source":"tblDataset_References",
+            "source": "tblDataset_References",
             "title": f"Reference {rid} for {table}",
         }
         out.append((doc_id, meta, txt))
     return out
 
-def main():
-    ap=argparse.ArgumentParser(description="Build/refresh the Chroma KB from agent catalog cache tables.")
-    ap.add_argument("--rebuild", action="store_true", help="Delete all existing KB docs before re-indexing")
-    ap.add_argument("--delete-stale", action="store_true", help="Delete KB docs not present in current catalog cache")
-    ap.add_argument("--limit", type=int, default=0, help="Optional limit number of datasets to index (dev)")
-    args=ap.parse_args()
 
-    store=SQLServerStore.from_env()
-    kb=ChromaKB()
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def main():
+    ap = argparse.ArgumentParser(
+        description="Build/refresh the Chroma KB directly from CMAP metadata tables."
+    )
+    ap.add_argument("--rebuild", action="store_true",
+                    help="Delete all existing KB docs before re-indexing.")
+    ap.add_argument("--delete-stale", action="store_true",
+                    help="Delete KB docs not present in the current catalog.")
+    ap.add_argument("--limit", type=int, default=0,
+                    help="Index only this many datasets (useful for dev/testing).")
+    args = ap.parse_args()
+
+    store = SQLServerStore.from_env()
+    kb = ChromaKB()
 
     if args.rebuild:
-        # delete everything
-        ids=kb.all_ids()
+        ids = kb.all_ids()
         kb.delete_ids(ids)
+        print(f"Deleted {len(ids)} existing KB docs.")
 
-    with store.engine.begin() as conn:
-        ds = pd.read_sql_query(text("SELECT * FROM agent.CatalogDatasets ORDER BY TableName"), conn)
-        vars_ = pd.read_sql_query(text("SELECT * FROM agent.CatalogVariables"), conn)
-        refs = pd.read_sql_query(text("SELECT * FROM agent.CatalogDatasetReferences"), conn)
+    print("Loading catalog from udfCatalog()...")
+    with store.engine.connect() as conn:
+        catalog = pd.read_sql_query(text(_UDF_SQL), conn)
 
-    if args.limit and args.limit>0:
-        ds = ds.head(args.limit)
+    print(f"  {len(catalog)} variable rows across {catalog['TableName'].nunique()} tables.")
 
-    # Build maps
-    vars_by_table={}
-    for _, r in vars_.iterrows():
-        vars_by_table.setdefault(r["TableName"], []).append(r.to_dict())
+    # Build per-dataset aggregates: one representative row + all variables
+    # Group by TableName; keep first row for dataset-level metadata (same for all vars in a table)
+    dataset_rows = (
+        catalog.drop_duplicates(subset=["TableName"])
+        .set_index("TableName")
+        .to_dict(orient="index")
+    )
+    vars_by_table: dict[str, list[dict]] = {}
+    for _, r in catalog.iterrows():
+        tbl = r["TableName"]
+        vars_by_table.setdefault(tbl, []).append({
+            "VarName": r["VarName"],
+            "LongName": r["LongName"],
+            "Unit": r["Unit"],
+            "Keywords": r["Keywords"],
+        })
 
-    refs_by_table={}
-    for _, r in refs.iterrows():
-        refs_by_table.setdefault(r["TableName"], []).append(r.to_dict())
+    # Load references directly from tblDataset_References
+    print("Loading references from tblDataset_References...")
+    with store.engine.connect() as conn:
+        refs_df = pd.read_sql_query(
+            text("SELECT Dataset_ID, Reference_ID, Reference, Data_DOI FROM dbo.tblDataset_References"),
+            conn,
+        )
+    # Map DatasetId → list of reference dicts
+    refs_by_dataset_id: dict[int, list[dict]] = {}
+    for _, r in refs_df.iterrows():
+        did = int(r["Dataset_ID"])
+        refs_by_dataset_id.setdefault(did, []).append(r.to_dict())
 
-    ids=[]
-    texts=[]
-    metas=[]
+    # Apply dataset limit if requested
+    tables = list(dataset_rows.keys())
+    if args.limit and args.limit > 0:
+        tables = tables[:args.limit]
 
-    for _, r in ds.iterrows():
-        row=r.to_dict()
-        table=row.get("TableName")
-        if not table:
-            continue
-        did=row.get("DatasetId")
-        refs_list=[x.get("Reference","") for x in refs_by_table.get(table, []) if x.get("Reference")]
-        vars_list=vars_by_table.get(table, [])
-        doc_text, meta = _dataset_doc(row, refs_list, vars_list)
+    ids: list[str] = []
+    texts: list[str] = []
+    metas: list[dict] = []
+
+    for table in tables:
+        row = dataset_rows[table]
+        did = row.get("DatasetId")
+        refs_list_raw = refs_by_dataset_id.get(int(did) if did is not None else -1, [])
+        refs_strs = [x.get("Reference", "") for x in refs_list_raw if x.get("Reference")]
+        vars_list = vars_by_table.get(table, [])
+
+        # Dataset document
+        doc_text, meta = _dataset_doc(row, refs_strs, vars_list)
         doc_id = f"ds:{table}"
-        # Keep chunks small enough to stay well under common embedding
-        # context limits (e.g., 8k tokens). We err on the conservative
-        # side because some catalog fields can be extremely token-dense.
         for idx, chunk in enumerate(_split_text(doc_text, max_chars=7_000), start=1):
             cid = doc_id if idx == 1 else f"{doc_id}#chunk{idx}"
             cmeta = dict(meta)
@@ -266,8 +357,8 @@ def main():
             texts.append(chunk)
             metas.append(cmeta)
 
-        # Reference docs
-        for doc_id2, meta2, txt in _reference_docs(table, did, refs_by_table.get(table, [])):
+        # Reference documents (one per citation)
+        for doc_id2, meta2, txt in _reference_docs(table, did, refs_list_raw):
             for idx, chunk in enumerate(_split_text(txt, max_chars=7_000), start=1):
                 cid = doc_id2 if idx == 1 else f"{doc_id2}#chunk{idx}"
                 cmeta = dict(meta2)
@@ -277,9 +368,9 @@ def main():
                 texts.append(chunk)
                 metas.append(cmeta)
 
-        # Variable docs (per variable)
+        # Variable documents (one per variable, includes keywords)
         for v in vars_list:
-            vid=f"var:{table}:{v.get('VarName')}"
+            vid = f"var:{table}:{v.get('VarName')}"
             vtxt = "\n".join([
                 f"Variable: {v.get('VarName')}",
                 f"TableName: {table}",
@@ -287,13 +378,13 @@ def main():
                 f"Unit: {v.get('Unit') or ''}",
                 f"Keywords: {v.get('Keywords') or ''}",
             ])
-            vmeta={
-                "doc_type":"variable",
+            vmeta = {
+                "doc_type": "variable",
                 "table": table,
                 "dataset_id": did,
                 "var_name": v.get("VarName"),
                 "title": f"{v.get('VarName')} ({table})",
-                "source":"agent.CatalogVariables",
+                "source": "udfCatalog",
             }
             for idx, chunk in enumerate(_split_text(vtxt, max_chars=7_000), start=1):
                 cid = vid if idx == 1 else f"{vid}#chunk{idx}"
@@ -307,13 +398,18 @@ def main():
     kb.upsert(ids=ids, texts=texts, metadatas=metas)
 
     if args.delete_stale:
-        current=set(ids)
-        existing=set(kb.all_ids())
-        stale=sorted(existing-current)
-        kb.delete_ids(stale)
+        current = set(ids)
+        existing = set(kb.all_ids())
+        stale = sorted(existing - current)
+        if stale:
+            kb.delete_ids(stale)
+            print(f"Deleted {len(stale)} stale KB docs.")
 
-    print(f"Indexed {len(ids)} KB docs into collection '{kb.collection_name}' at '{kb.persist_dir}'.")
+    print(
+        f"Indexed {len(ids)} KB docs across {len(tables)} datasets "
+        f"into collection '{kb.collection_name}' at '{kb.persist_dir}'."
+    )
 
-if __name__=="__main__":
+
+if __name__ == "__main__":
     main()
-

@@ -1,3 +1,20 @@
+-- agent_schema.sql
+--
+-- Creates all agent.* tables required by cmap-agent.
+-- Safe to run on an existing database — all statements are idempotent.
+-- Run this once before the first deployment, then re-run after any schema
+-- update; existing tables and data are never dropped or truncated.
+--
+-- Tables created:
+--   agent.Threads          — conversation sessions
+--   agent.Messages         — individual messages within a thread
+--   agent.ToolRuns         — tool call log (arguments, results, timing)
+--   agent.ThreadSummaries  — rolling/final memory summaries
+--
+-- Note: agent.Catalog* tables (CatalogDatasets, CatalogVariables,
+-- CatalogDatasetReferences) were removed in v0.2.55. The agent runtime
+-- now reads directly from udfCatalog() and dbo.tblDataset_References.
+-- Run sql/drop_agent_catalog_tables.sql to remove those tables if still present.
 
 IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = 'agent')
 BEGIN
@@ -16,9 +33,22 @@ CREATE TABLE agent.Threads (
     UpdatedAt          DATETIME2(3) NOT NULL DEFAULT SYSUTCDATETIME(),
     IsArchived         BIT NOT NULL DEFAULT 0,
     ClientTag          NVARCHAR(50) NULL,
+    AgentState         NVARCHAR(MAX) NULL,
     PRIMARY KEY (ThreadId)
 );
 CREATE INDEX IX_Threads_User_Updated ON agent.Threads(UserId, UpdatedAt DESC);
+END
+ELSE
+BEGIN
+    -- Idempotent migration: add AgentState if not already present
+    IF NOT EXISTS (
+        SELECT 1 FROM sys.columns
+        WHERE object_id = OBJECT_ID('agent.Threads') AND name = 'AgentState'
+    )
+    BEGIN
+        ALTER TABLE agent.Threads ADD AgentState NVARCHAR(MAX) NULL;
+        PRINT 'agent.Threads.AgentState column added.';
+    END
 END
 GO
 
@@ -86,78 +116,3 @@ CREATE TABLE agent.ThreadSummaries (
 CREATE INDEX IX_Summaries_Thread_Created ON agent.ThreadSummaries(ThreadId, CreatedAt DESC);
 END
 GO
-
--- Catalog cache (rich metadata + authoritative stats + references)
-IF OBJECT_ID('agent.CatalogDatasets', 'U') IS NULL
-BEGIN
-CREATE TABLE agent.CatalogDatasets (
-    TableName          NVARCHAR(200) NOT NULL,
-    DatasetId          INT NULL,
-    ShortName          NVARCHAR(450) NULL,
-    DatasetName        NVARCHAR(MAX) NULL,
-    Description        NVARCHAR(MAX) NULL,
-    Keywords           NVARCHAR(MAX) NULL,
-    DataSource         NVARCHAR(MAX) NULL,
-    Distributor        NVARCHAR(MAX) NULL,
-    Acknowledgement    NVARCHAR(MAX) NULL,
-
-    Make               NVARCHAR(MAX) NULL,
-    Sensor             NVARCHAR(MAX) NULL,
-    ProcessLevel       NVARCHAR(200) NULL,
-    StudyDomain         NVARCHAR(200) NULL,
-    TemporalResolution NVARCHAR(400) NULL,
-    SpatialResolution  NVARCHAR(400) NULL,
-    Units              NVARCHAR(1000) NULL,
-    Comments           NVARCHAR(MAX) NULL,
-    Regions            NVARCHAR(1000) NULL,
-
-    -- Authoritative coverage from tblDataset_Stats
-    TimeMin            DATETIME2(3) NULL,
-    TimeMax            DATETIME2(3) NULL,
-    LatMin             FLOAT NULL,
-    LatMax             FLOAT NULL,
-    LonMin             FLOAT NULL,
-    LonMax             FLOAT NULL,
-    DepthMin           FLOAT NULL,
-    DepthMax           FLOAT NULL,
-    HasDepth           BIT NULL,
-
-    UpdatedAt          DATETIME2(3) NOT NULL DEFAULT SYSUTCDATETIME(),
-    PRIMARY KEY (TableName)
-);
-CREATE INDEX IX_CatalogDatasets_ShortName ON agent.CatalogDatasets(ShortName);
-CREATE INDEX IX_CatalogDatasets_DatasetId ON agent.CatalogDatasets(DatasetId);
-END
-GO
-
-IF OBJECT_ID('agent.CatalogVariables', 'U') IS NULL
-BEGIN
-CREATE TABLE agent.CatalogVariables (
-    TableName          NVARCHAR(200) NOT NULL,
-    VarName            NVARCHAR(200) NOT NULL,
-    LongName           NVARCHAR(500) NULL,
-    Unit               NVARCHAR(100) NULL,
-    Keywords           NVARCHAR(MAX) NULL,
-    UpdatedAt          DATETIME2(3) NOT NULL DEFAULT SYSUTCDATETIME(),
-    PRIMARY KEY (TableName, VarName),
-    CONSTRAINT FK_CatalogVariables_Dataset FOREIGN KEY (TableName) REFERENCES agent.CatalogDatasets(TableName)
-);
-CREATE INDEX IX_CatalogVariables_VarName ON agent.CatalogVariables(VarName);
-END
-GO
-
-IF OBJECT_ID('agent.CatalogDatasetReferences', 'U') IS NULL
-BEGIN
-CREATE TABLE agent.CatalogDatasetReferences (
-    TableName          NVARCHAR(200) NOT NULL,
-    DatasetId          INT NULL,
-    ReferenceId        INT NOT NULL,
-    Reference          NVARCHAR(MAX) NOT NULL,
-    UpdatedAt          DATETIME2(3) NOT NULL DEFAULT SYSUTCDATETIME(),
-    PRIMARY KEY (TableName, ReferenceId),
-    CONSTRAINT FK_CatalogDatasetReferences_Dataset FOREIGN KEY (TableName) REFERENCES agent.CatalogDatasets(TableName)
-);
-CREATE INDEX IX_CatalogDatasetReferences_DatasetId ON agent.CatalogDatasetReferences(DatasetId);
-END
-GO
-

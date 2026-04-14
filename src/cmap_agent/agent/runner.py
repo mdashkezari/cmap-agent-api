@@ -1244,6 +1244,33 @@ def execute_plan(
                     trace_item["arguments"] = exec_args
                     trace_item["arg_sanitized"] = True
 
+            # query_metadata intercept: if catalog.query_metadata already returned rows
+            # in this turn, block follow-up catalog search tools — the SQL result is
+            # definitive and the model should respond from it directly.
+            _qm_success = any(
+                t.get("tool") == "catalog.query_metadata"
+                and t.get("status") == "ok"
+                and (t.get("result_preview") or {}).get("rows")
+                for t in tool_trace
+            )
+            if (
+                _qm_success
+                and exec_call_name.startswith(("catalog.search", "catalog.list", "catalog.dataset"))
+            ):
+                trace_item["status"] = "blocked"
+                trace_item["blocked_reason"] = "query_metadata_answered"
+                tool_trace.append(trace_item)
+                messages.append(LLMMessage(
+                    role="user",
+                    content=(
+                        "catalog.query_metadata already returned results for this request. "
+                        "Do NOT call additional catalog search tools — the SQL query result "
+                        "is the definitive answer. Respond with JSON type='final' and present "
+                        "the query_metadata rows directly as your answer."
+                    ),
+                ))
+                continue
+
             # Summarize intercept: if the request is informational, block data/viz tools
             # and push the model to answer in prose from catalog results only.
             # Exception: if confirmed_dataset_table is set, the user is confirming a

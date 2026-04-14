@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 from cmap_agent.tools.registry import Tool, ToolRegistry
+from cmap_agent.tools.metadata_query_tool import (
+    QueryMetadataArgs,
+    query_metadata,
+    SCHEMA_SUMMARY,
+)
 from cmap_agent.tools.catalog_tools import (
     CatalogSearchArgs, CatalogSearchVariablesArgs, CatalogSearchROIArgs, CatalogSearchKBFArgs, DatasetMetadataArgs, ListVariablesArgs,
     CountDatasetsArgs, DatasetSummaryArgs,
@@ -140,6 +145,24 @@ def build_default_registry() -> ToolRegistry:
         description="Create a custom map plot PNG from a CMAP subset artifact or inline rows. Shows labeled lat/lon ticks; supports Cartopy projections via the 'projection' argument (default PlateCarree).",
         args_model=PlotMapArgs,
         fn=plot_map,
+    ))
+
+    # Metadata SQL tool
+    reg.register(Tool(
+        name="catalog.query_metadata",
+        description=(
+            "Execute a read-only SELECT query against CMAP metadata tables to answer "
+            "structural questions not covered by other catalog tools. Use for: "
+            "cruise details (ship, chief scientist, dates, region), scientists on a cruise, "
+            "which program a dataset belongs to, what CMAP regions a dataset covers, "
+            "dataset references/citations, server locations, or collection listings. "
+            "Do NOT use for variable data retrieval — use pycmap tools for that. "
+            "The query must use SQL Server syntax, reference only metadata tables, "
+            "and include TOP N. "
+            "Schema:\n" + SCHEMA_SUMMARY
+        ),
+        args_model=QueryMetadataArgs,
+        fn=query_metadata,
     ))
 
     # Web search tool (optional; requires TAVILY_API_KEY)

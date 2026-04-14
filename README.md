@@ -28,9 +28,8 @@ On each user turn the server:
 2. Injects that context into the system prompt as primary context
 3. Lets the agent decide whether to call tools (catalog lookup, data retrieval, plotting, web search)
 
-We can refresh the KB on demand:
-- `cmap-agent-sync-catalog`  (refresh cached catalog tables in SQL Server)
-- `cmap-agent-sync-kb`       (rebuild/update the Chroma KB from the cache)
+The KB can be refreshed on demand:
+- `cmap-agent-sync-kb`  (rebuild/update the Chroma KB directly from live CMAP metadata tables)
 
 ---
 
@@ -48,13 +47,16 @@ conda activate cmap-agent
 > The `environment.yml` file installs all dependencies needed to run the server + RAG + tools (FastAPI/uvicorn, Chroma, OpenAI/Anthropic clients, etc.). It also installs the geo stack (Cartopy + PROJ + GDAL) from `conda-forge` and installs this project in editable mode (`pip -e .`).
 
 ### 2) Apply SQL schema
-Build the DB objects for the first time:
+Run once against the target database before first deployment:
 
-- `sql/agent_schema.sql`
+```bash
+# In Azure Data Studio or sqlcmd:
+sql/agent_schema.sql
+```
 
-It creates:
-- conversation tables: `agent.Threads`, `agent.Messages`, `agent.ToolRuns`, `agent.Summaries`
-- catalog cache tables: `agent.CatalogDatasets`, `agent.CatalogVariables`, `agent.CatalogDatasetReferences`
+Creates: `agent.Threads` (with `AgentState`), `agent.Messages`, `agent.ToolRuns`, `agent.ThreadSummaries`.
+Safe to re-run — all statements are idempotent. If upgrading from a pre-v0.2.55 install,
+also run `sql/drop_agent_catalog_tables.sql` to remove the obsolete `agent.Catalog*` tables.
 
 ### 3) Configure environment variables
 
@@ -83,18 +85,17 @@ export CMAP_AGENT_CHROMA_DIR="chroma"
 export CMAP_AGENT_KB_COLLECTION="cmap_kb_v1"
 ```
 
-### 4) Sync catalog cache + build the KB
+### 4) Build the KB
 
-Catalog sync pulls rich catalog metadata using `pycmap.common.catalog_sql()` and then joins:
-- authoritative coverage from `tblDataset_Stats`
-- references from `tblDataset_References`
+The KB is built directly from live CMAP metadata tables (`udfCatalog()` and `tblDataset_References`).
+No intermediate cache tables are required.
 
 ```bash
-# 1) refresh SQL cache tables
-cmap-agent-sync-catalog --base-url https://simonscmap.dev
-
-# 2) build / update Chroma KB
+# Build / update Chroma KB (run after CMAP catalog changes)
 cmap-agent-sync-kb --delete-stale
+
+# Full rebuild from scratch
+cmap-agent-sync-kb --rebuild
 ```
 
 ---
@@ -181,9 +182,11 @@ When the agent uses pycmap-based tools, the API can return a `code` string conta
 - response: `code` contains concatenated snippets (not executed)
 
 ### Updating the KB on demand
-Any time datasets are added/removed in CMAP:
-1. Run `cmap-agent-sync-catalog`
-2. Run `cmap-agent-sync-kb --delete-stale`
+Any time datasets are added or updated in CMAP, run:
+```bash
+cmap-agent-sync-kb --delete-stale
+```
+This reads directly from the live CMAP metadata tables — no separate catalog sync step needed.
 
 ---
 

@@ -448,7 +448,7 @@ def cmap_colocalize(args: ColocalizeArgs, ctx: dict) -> dict[str, Any]:
 
     source_has_depth = "depth" in df_source.columns
 
-    # Infer tolerances from agent.CatalogDatasets (SpatialResolution/TemporalResolution)
+    # Infer tolerances from the in-memory catalog cache (SpatialResolution/TemporalResolution)
     # when not supplied, and add guardrails for climatology temporal units.
     store = ctx.get("store") if isinstance(ctx.get("store"), SQLServerStore) else None
     if store is None:
