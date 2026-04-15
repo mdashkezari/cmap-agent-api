@@ -63,11 +63,23 @@ class OpenAIEmbedder:
             batch = []
             batch_tok = 0
 
+        def _sanitize(s: str) -> str:
+            """Remove characters that break JSON serialization."""
+            # Remove null bytes and other control chars that invalidate JSON
+            import re
+            s = s.replace("\x00", "")
+            # Replace other problematic control characters (except \n \t \r)
+            s = re.sub(r"[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]", " ", s)
+            # Ensure valid UTF-8 by encode/decode round-trip
+            s = s.encode("utf-8", errors="replace").decode("utf-8", errors="replace")
+            return s.strip() or " "
+
         for t in texts:
             if t is None:
                 t = ""
             if not isinstance(t, str):
                 t = str(t)
+            t = _sanitize(t)
 
             tok = _estimate_tokens(t)
 

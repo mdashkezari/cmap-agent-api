@@ -544,9 +544,27 @@ def chat(
             sys_prompt = sys_prompt + "\n\nConversation summary (memory):\n" + summary.strip()
 
         # RAG retrieval
+        # For short affirmative follow-ups ("yes", "ok", etc.), use the last
+        # assistant message as the KB query so we retrieve relevant context
+        # rather than querying with a single meaningless word.
+        _AFFIRMATIVES = {"yes", "sure", "ok", "okay", "go ahead", "please",
+                         "yep", "yeah", "do it", "yes please", "go on",
+                         "proceed", "continue", "do that", "sounds good"}
+        _kb_query = req.message.strip()
+        if _kb_query.lower().rstrip("!.,?") in _AFFIRMATIVES:
+            # Find last assistant message in history to use as query
+            for _hmsg in reversed(msgs or []):
+                _role = (_hmsg.get("Role") or _hmsg.get("role") or "").lower()
+                if _role == "assistant":
+                    _asst = (_hmsg.get("Content") or _hmsg.get("content") or "").strip()
+                    if len(_asst) > 20:
+                        _kb_query = _asst[:400]
+                        break
+
         rag_context = ""
+        kb_hits: list[dict] = []
         try:
-            rag_context, _hits = retrieve_context(req.message, k=settings.CMAP_AGENT_KB_TOP_K)
+            rag_context, kb_hits = retrieve_context(_kb_query, k=settings.CMAP_AGENT_KB_TOP_K)
         except Exception:
             rag_context = ""
 
@@ -665,12 +683,22 @@ def chat(
         except Exception:
             pass
 
+        kb_hits_trimmed = [
+            {"id": h.get("id",""), "text": (h.get("text") or "")[:300],
+             "source": (h.get("metadata") or {}).get("source",""),
+             "doc_type": (h.get("metadata") or {}).get("doc_type",""),
+             "title": (h.get("metadata") or {}).get("title",""),
+             "filename": (h.get("metadata") or {}).get("filename",""),
+             "distance": h.get("distance")}
+            for h in kb_hits
+        ]
         return ChatResponse(
             thread_id=thread_id,
             assistant_message=final.assistant_message,
             code=final.code if req.options.return_code else None,
             artifacts=_to_jsonable(_sanitize_public(final.artifacts)),
             tool_trace=_to_jsonable(_sanitize_public(tool_trace)),
+            kb_hits=kb_hits_trimmed,
         )
     except SystemExit as e:
         # Defensive: sys.exit() should never take down the API worker.

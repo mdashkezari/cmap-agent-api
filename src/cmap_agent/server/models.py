@@ -6,7 +6,7 @@ from datetime import datetime
 
 class LLMConfig(BaseModel):
     provider: Literal["openai","anthropic"] = "openai"
-    model: str = "gpt-4.1-mini"
+    model: str = "gpt-5.4-mini"
 
 class ChatOptions(BaseModel):
     return_code: bool = True
@@ -27,6 +27,8 @@ class ChatResponse(BaseModel):
     code: str | None = None
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
     tool_trace: list[dict[str, Any]] = Field(default_factory=list)
+    kb_hits: list[dict[str, Any]] = Field(default_factory=list)
+    """KB chunks retrieved for this query. Each hit has: id, text (truncated), metadata, distance."""
 
 
 class ThreadItem(BaseModel):

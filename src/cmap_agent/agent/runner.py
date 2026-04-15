@@ -84,7 +84,24 @@ def _try_parse_json(text: str) -> dict[str, Any] | None:
     try:
         return json.loads(text)
     except Exception:
-        return None
+        pass
+    # Some models (e.g. gpt-5.x) emit multiple concatenated JSON objects.
+    # Extract the first complete JSON object using a bracket-depth scan.
+    try:
+        depth = 0
+        start = text.find("{")
+        if start == -1:
+            return None
+        for i, ch in enumerate(text[start:], start):
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return json.loads(text[start:i + 1])
+    except Exception:
+        pass
+    return None
 
 
 def _coerce_to_plan_or_final(
@@ -1275,6 +1292,26 @@ def execute_plan(
             # and push the model to answer in prose from catalog results only.
             # Exception: if confirmed_dataset_table is set, the user is confirming a
             # dataset selection (not asking for a summary) — never block in that case.
+            # Block viz.plot_map / cmap.space_time when intent is colocalize
+            if (
+                intent.action == "colocalize"
+                and exec_call_name in {"viz.plot_map", "cmap.space_time", "cmap.time_series"}
+            ):
+                trace_item["status"] = "blocked"
+                trace_item["blocked_reason"] = "colocalize_action"
+                tool_trace.append(trace_item)
+                messages.append(LLMMessage(
+                    role="user",
+                    content=(
+                        "This is a COLOCALIZATION request — do NOT call viz.plot_map, "
+                        "cmap.space_time, or cmap.time_series. "
+                        "You must call cmap.colocalize with source_table=<resolved_table> "
+                        "and targets=[{table:..., variables:[...]}]. "
+                        "Use source_table (not source_artifact) for CMAP table sources."
+                    ),
+                ))
+                continue
+
             if (
                 intent.action == "summarize"
                 and exec_call_name.startswith(("cmap.", "viz."))
@@ -1320,7 +1357,7 @@ def execute_plan(
                         final.code = "\n\n".join(pycmap_code_snippets)
                     return final, tool_trace, thread_state
 
-            # Strip unspecified colocalization tolerances
+            # Strip unspecified colocalization tolerances + fix hallucinated source_table
             if call.name == "cmap.colocalize":
                 sanitized, changed = _sanitize_colocalize_arguments(active_user_message, raw_args)
                 if changed:
@@ -1328,6 +1365,50 @@ def execute_plan(
                     trace_item["original_arguments"] = raw_args
                     trace_item["arguments"] = sanitized
                     trace_item["arg_sanitized"] = True
+
+                # Validate source_table against tables resolved in this turn's tool trace.
+                # The model sometimes hallucinates a table name instead of using the one
+                # returned by catalog.dataset_summary.
+                _src_table = exec_args.get("source_table")
+                if _src_table:
+                    # Collect all tables resolved by catalog tools this turn
+                    _resolved_tables: set[str] = set()
+                    for _tr in tool_trace:
+                        _rp = _tr.get("result_preview") or {}
+                        # From catalog.dataset_summary
+                        for _key in ("selected", "matched"):
+                            _item = _rp.get(_key)
+                            if isinstance(_item, dict) and _item.get("table"):
+                                _resolved_tables.add(str(_item["table"]))
+                        for _m in (_rp.get("matches") or []):
+                            if isinstance(_m, dict) and _m.get("table"):
+                                _resolved_tables.add(str(_m["table"]))
+                        # From catalog.search_kb_first / catalog.search
+                        _sel = _rp.get("selected")
+                        if isinstance(_sel, dict) and _sel.get("table"):
+                            _resolved_tables.add(str(_sel["table"]))
+
+                    if _resolved_tables and _src_table not in _resolved_tables:
+                        # Model used wrong table — pick the most recently resolved one
+                        # that isn't a target table
+                        _target_tables = {
+                            t.get("table") for t in (exec_args.get("targets") or [])
+                            if isinstance(t, dict)
+                        }
+                        _candidates = _resolved_tables - _target_tables
+                        if _candidates:
+                            _correct_table = sorted(_candidates)[-1]  # deterministic pick
+                            import logging as _logging
+                            _logging.getLogger(__name__).warning(
+                                "colocalize: source_table '%s' not in resolved tables %s "
+                                "— correcting to '%s'",
+                                _src_table, _resolved_tables, _correct_table
+                            )
+                            exec_args = dict(exec_args)
+                            exec_args["source_table"] = _correct_table
+                            trace_item["original_arguments"] = raw_args
+                            trace_item["arguments"] = exec_args
+                            trace_item["arg_sanitized"] = True
 
             # Dedup identical calls within a turn
             args_key = json.dumps(exec_args, sort_keys=True, default=str)

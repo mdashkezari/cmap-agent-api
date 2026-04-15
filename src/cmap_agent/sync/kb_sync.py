@@ -18,6 +18,19 @@ from typing import Any
 
 import pandas as pd
 from sqlalchemy import text
+from pathlib import Path
+import hashlib
+import re as _re
+
+
+def _sanitize_text(s: str) -> str:
+    """Strip characters that break JSON/embedding API calls."""
+    if not s:
+        return " "
+    s = s.replace("\x00", "")
+    s = _re.sub(r"[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]", " ", s)
+    s = s.encode("utf-8", errors="replace").decode("utf-8", errors="replace")
+    return s.strip() or " "
 
 from cmap_agent.storage.sqlserver import SQLServerStore
 from cmap_agent.rag.chroma_kb import ChromaKB
@@ -273,6 +286,141 @@ def _reference_docs(table: str, dataset_id: int | None, refs: list[dict[str, Any
 # Main
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Reference bank ingestion
+# ---------------------------------------------------------------------------
+
+def _default_bank_dir() -> Path:
+    """Return notrack/reference_bank relative to project root."""
+    here = Path(__file__).resolve()
+    project_root = here.parents[3]
+    return project_root / "notrack" / "reference_bank"
+
+
+def _file_hash(path: Path) -> str:
+    return hashlib.sha1(path.read_bytes()).hexdigest()[:12]
+
+
+def _extract_text_from_file(path: Path) -> str | None:
+    """Extract plain text from PDF, HTML, Markdown, or plain text files."""
+    suffix = path.suffix.lower()
+
+    if suffix == ".pdf":
+        try:
+            import fitz  # pymupdf
+            doc = fitz.open(str(path))
+            parts = []
+            for page in doc:
+                parts.append(page.get_text())
+            doc.close()
+            return "\n".join(parts).strip() or None
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning("PDF extract failed %s: %s", path.name, e)
+            return None
+
+    if suffix in (".html", ".htm"):
+        try:
+            from html.parser import HTMLParser
+            class _Strip(HTMLParser):
+                def __init__(self):
+                    super().__init__()
+                    self._parts = []
+                    self._skip = False
+                def handle_starttag(self, tag, attrs):
+                    if tag in ("script", "style"):
+                        self._skip = True
+                def handle_endtag(self, tag):
+                    if tag in ("script", "style"):
+                        self._skip = False
+                def handle_data(self, data):
+                    if not self._skip:
+                        self._parts.append(data)
+            p = _Strip()
+            p.feed(path.read_text(errors="replace"))
+            return " ".join(p._parts).strip() or None
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning("HTML extract failed %s: %s", path.name, e)
+            return None
+
+    # Markdown / plain text
+    if suffix in (".md", ".txt", ".rst", ""):
+        try:
+            return path.read_text(errors="replace").strip() or None
+        except Exception:
+            return None
+
+    return None
+
+
+def _ingest_reference_bank(
+    bank_dir: Path,
+    dataset_rows: dict,          # TableName → row dict (for dataset_id lookup)
+    short_name_to_table: dict,   # ShortName → TableName
+    ids: list,
+    texts: list,
+    metas: list,
+) -> int:
+    """Scan the reference bank and add paper-chunk documents to the KB lists.
+
+    Returns the number of chunk documents added.
+    """
+    import logging
+    log = logging.getLogger(__name__)
+
+    if not bank_dir.exists():
+        log.info("Reference bank not found at %s — skipping.", bank_dir)
+        return 0
+
+    added = 0
+    for dataset_dir in sorted(bank_dir.iterdir()):
+        if not dataset_dir.is_dir():
+            continue
+        short_name = dataset_dir.name
+        table_name = short_name_to_table.get(short_name)
+        dataset_id = None
+        if table_name and table_name in dataset_rows:
+            dataset_id = dataset_rows[table_name].get("DatasetId")
+
+        files = [f for f in sorted(dataset_dir.iterdir())
+                 if f.is_file() and not f.name.startswith(".")]
+        if not files:
+            continue
+
+        log.info("Reference bank: %s (%d file(s))", short_name, len(files))
+
+        for fpath in files:
+            text_content = _extract_text_from_file(fpath)
+            if not text_content or len(text_content) < 50:
+                log.debug("  Skipping %s (empty or unreadable)", fpath.name)
+                continue
+
+            fhash = _file_hash(fpath)
+            base_id = f"refbank:{short_name}:{fpath.stem}:{fhash}"
+            meta_base = {
+                "doc_type": "paper_chunk",
+                "short_name": short_name,
+                "table": table_name or "",
+                "dataset_id": dataset_id,
+                "filename": fpath.name,
+                "source": "reference_bank",
+                "title": f"{short_name} — {fpath.stem}",
+            }
+
+            for idx, chunk in enumerate(_split_text(text_content, max_chars=7_000), start=1):
+                cid = base_id if idx == 1 else f"{base_id}#chunk{idx}"
+                cmeta = dict(meta_base)
+                if idx != 1:
+                    cmeta["chunk_index"] = idx
+                ids.append(cid)
+                texts.append(_sanitize_text(chunk))
+                metas.append(cmeta)
+                added += 1
+
+    return added
+
+
 def main():
     ap = argparse.ArgumentParser(
         description="Build/refresh the Chroma KB directly from CMAP metadata tables."
@@ -283,6 +431,10 @@ def main():
                     help="Delete KB docs not present in the current catalog.")
     ap.add_argument("--limit", type=int, default=0,
                     help="Index only this many datasets (useful for dev/testing).")
+    ap.add_argument("--bank-dir", default=None,
+                    help="Path to reference bank root. Default: notrack/reference_bank/.")
+    ap.add_argument("--skip-bank", action="store_true",
+                    help="Skip reference bank ingestion (catalog metadata only).")
     args = ap.parse_args()
 
     store = SQLServerStore.from_env()
@@ -354,7 +506,7 @@ def main():
             if idx != 1:
                 cmeta["chunk_index"] = idx
             ids.append(cid)
-            texts.append(chunk)
+            texts.append(_sanitize_text(chunk))
             metas.append(cmeta)
 
         # Reference documents (one per citation)
@@ -365,7 +517,7 @@ def main():
                 if idx != 1:
                     cmeta["chunk_index"] = idx
                 ids.append(cid)
-                texts.append(chunk)
+                texts.append(_sanitize_text(chunk))
                 metas.append(cmeta)
 
         # Variable documents (one per variable, includes keywords)
@@ -392,10 +544,33 @@ def main():
                 if idx != 1:
                     cmeta["chunk_index"] = idx
                 ids.append(cid)
-                texts.append(chunk)
+                texts.append(_sanitize_text(chunk))
                 metas.append(cmeta)
 
     kb.upsert(ids=ids, texts=texts, metadatas=metas)
+
+    # Reference bank ingestion
+    if not args.skip_bank:
+        bank_dir = Path(args.bank_dir) if args.bank_dir else _default_bank_dir()
+        # Build short_name → table_name lookup
+        short_name_to_table = {
+            row.get("ShortName"): tname
+            for tname, row in dataset_rows.items()
+            if row.get("ShortName")
+        }
+        bank_ids: list[str] = []
+        bank_texts: list[str] = []
+        bank_metas: list[dict] = []
+        n_bank = _ingest_reference_bank(
+            bank_dir, dataset_rows, short_name_to_table,
+            bank_ids, bank_texts, bank_metas,
+        )
+        if n_bank:
+            kb.upsert(ids=bank_ids, texts=bank_texts, metadatas=bank_metas)
+            ids.extend(bank_ids)
+            print(f"Indexed {n_bank} reference bank chunks from {bank_dir}.")
+        else:
+            print("No reference bank documents found.")
 
     if args.delete_stale:
         current = set(ids)

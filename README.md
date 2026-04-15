@@ -11,7 +11,7 @@ The system enables users to express scientific intent in natural language and ob
 
 The service supports:
 - Natural-language chat about CMAP datasets / variables / coverage / references
-- Semantic search over a local knowledge base (Chroma) built from CMAP catalog metadata + dataset references
+- Semantic search over a local knowledge base (Chroma) built from CMAP catalog metadata, dataset references, and full-text scientific literature from the reference bank
 - Tool-calling to:
   - retrieve raw CMAP subsets via `pycmap` (returns Parquet by default; optional CSV)
   - generate custom static plots (PNG) including Cartopy maps
@@ -29,7 +29,8 @@ On each user turn the server:
 3. Lets the agent decide whether to call tools (catalog lookup, data retrieval, plotting, web search)
 
 The KB can be refreshed on demand:
-- `cmap-agent-sync-kb`  (rebuild/update the Chroma KB directly from live CMAP metadata tables)
+- `cmap-agent-download-refs`  (download scientific papers and documents into the reference bank)
+- `cmap-agent-sync-kb`        (rebuild/update the Chroma KB from live CMAP metadata + reference bank)
 
 ---
 
@@ -87,15 +88,31 @@ export CMAP_AGENT_KB_COLLECTION="cmap_kb_v1"
 
 ### 4) Build the KB
 
-The KB is built directly from live CMAP metadata tables (`udfCatalog()` and `tblDataset_References`).
-No intermediate cache tables are required.
+The KB is built from two sources: live CMAP metadata tables (`udfCatalog()` and
+`tblDataset_References`) and the reference bank (`notrack/reference_bank/`).
 
+**Download scientific references** (optional but recommended):
 ```bash
-# Build / update Chroma KB (run after CMAP catalog changes)
+# Download all references (PDFs, GitHub READMEs, HTML docs)
+cmap-agent-download-refs
+
+# Or target specific datasets
+cmap-agent-download-refs --dataset GRUMP --dataset HOT_Bottle_ALOHA
+```
+
+Documents can also be placed manually into `notrack/reference_bank/{Dataset_Short_Name}/`
+— the sync will ingest whatever it finds regardless of how it arrived.
+
+**Build / update the KB**:
+```bash
+# Build / update Chroma KB (catalog + reference bank)
 cmap-agent-sync-kb --delete-stale
 
 # Full rebuild from scratch
 cmap-agent-sync-kb --rebuild
+
+# Catalog metadata only, skip reference bank
+cmap-agent-sync-kb --skip-bank
 ```
 
 ---
@@ -182,11 +199,15 @@ When the agent uses pycmap-based tools, the API can return a `code` string conta
 - response: `code` contains concatenated snippets (not executed)
 
 ### Updating the KB on demand
-Any time datasets are added or updated in CMAP, run:
+Any time datasets are added or updated in CMAP:
 ```bash
+# Download new references, then sync
+cmap-agent-download-refs
 cmap-agent-sync-kb --delete-stale
 ```
-This reads directly from the live CMAP metadata tables — no separate catalog sync step needed.
+To add a document not in the reference tables, place it in
+`notrack/reference_bank/{Dataset_Short_Name}/` and re-run `cmap-agent-sync-kb`.
+The download and sync steps are fully independent.
 
 ---
 
@@ -199,7 +220,7 @@ src/cmap_agent/
   rag/                # Chroma KB + embeddings + retrieval formatting
   server/             # FastAPI app + request/response models
   storage/            # SQL Server persistence
-  sync/               # catalog sync + KB sync
+  sync/               # KB sync, reference download, catalog sync
   tools/              # tool implementations (catalog, cmap, viz, kb, web)
 sql/
   agent_schema.sql
