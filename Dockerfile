@@ -37,5 +37,13 @@ ENV PATH=/opt/conda/envs/cmap-agent/bin:$PATH
 
 COPY . /app
 
+# Pre-download the fastembed BM25 tokenizer (~10 KB of stopword files) so the
+# container does not need outbound HuggingFace access at runtime.
+# The Qdrant/bm25 model is a pure tokenizer, not a neural network —
+# download is near-instant and adds negligible image size.
+RUN micromamba run -n cmap-agent python -c \
+    "from fastembed import SparseTextEmbedding; SparseTextEmbedding(model_name='Qdrant/bm25')" \
+    || echo "WARNING: fastembed BM25 pre-download failed — will attempt at runtime"
+
 EXPOSE 8000
 CMD ["micromamba","run","-n","cmap-agent","uvicorn", "cmap_agent.server.app:app", "--host", "0.0.0.0", "--port", "8000"]

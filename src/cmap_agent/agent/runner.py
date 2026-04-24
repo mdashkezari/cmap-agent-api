@@ -573,11 +573,144 @@ def _candidate_within_space(r: dict[str, Any], intent: UserIntent) -> bool:
 
 
 def _bare_query(search_query: str) -> str:
-    """Strip make/sensor words to get the core variable name for discovery."""
-    q = (search_query or "").lower()
-    for drop in ("satellite", "model", "assimilation", "observation", "in-situ", "insitu"):
-        q = q.replace(drop, "").strip()
-    return q.strip() or search_query
+    """Normalize the user's discovery query for catalog search.
+
+    Prior to v219 this function stripped intent-bearing qualifiers like
+    ``satellite``, ``model``, ``observation``, and ``in-situ`` from the
+    query, matching an older system-prompt instruction that asked the LLM
+    to do the same.  v218 changed the prompt guidance so the LLM now
+    preserves those qualifiers; this function does the same on the code
+    side so the intent reaches the ranking stage.
+
+    What this function still removes:
+
+      - pure filler that adds no retrieval signal (``cmap``, ``data``,
+        ``dataset``, ``datasets``, ``please``, ``show me``, ``please
+        show``, ``can you show``, ``give me``)
+      - collapses internal whitespace runs
+
+    What this function intentionally preserves:
+
+      - measurement-type qualifiers (``satellite``, ``model``,
+        ``observation``, ``in-situ``) — they distinguish otherwise
+        identically-named variables across product types
+      - sensor / instrument names (``MODIS``, ``MiSeq``, ``SeaWiFS``)
+      - temporal mode (``climatology``, ``monthly``, ``daily``)
+      - regional names (``North Atlantic``, ``Southern Ocean``)
+
+    Callers that actually want the word-level noun only (e.g. some
+    variable-fuzzy-match paths) should not use this function; they
+    already have ``_norm_name`` for name normalization.
+    """
+    q = (search_query or "").lower().strip()
+    if not q:
+        return search_query or ""
+    # Pure-filler tokens.  Each is matched as a word (with simple
+    # whitespace boundaries) so substrings inside legitimate words are
+    # not removed.  ``cmap`` is filler in user-facing queries because
+    # every dataset in this catalog is a CMAP dataset by definition.
+    _FILLER_WORDS = (
+        "cmap", "data", "dataset", "datasets",
+        "please", "show me", "please show", "can you show",
+        "can you", "give me", "i want", "i'd like",
+    )
+    for drop in _FILLER_WORDS:
+        # Word-bounded replace: " word " -> " ", and also strip at string
+        # edges via temporary padding.
+        padded = f" {q} "
+        padded = padded.replace(f" {drop} ", " ")
+        q = padded.strip()
+    # Collapse any resulting whitespace runs.
+    import re as _re
+    q = _re.sub(r"\s+", " ", q).strip()
+    return q or (search_query or "")
+
+
+def _combined_modality_hint(
+    intent: "UserIntent",
+    user_message: str,
+) -> dict[str, str]:
+    """Resolve a single modality hint from multiple signals.
+
+    The intent-extraction prompt in ``intent.py`` explicitly instructs
+    the LLM to strip sensor/make qualifiers from ``search_query`` and
+    populate the structured ``intent.sensor`` / ``intent.make`` fields
+    instead.  Downstream ranking code that only reads the stripped
+    ``search_query`` therefore loses modality signals like "satellite"
+    or "model".  This helper consolidates the three places the signal
+    could live:
+
+    1. ``intent.sensor`` and ``intent.make`` — explicit, validated by
+       the intent extractor.  Preferred when set.
+    2. The raw user message text — catches phrasings the intent
+       extractor missed.
+    3. ``intent.search_query`` — last resort (may retain the word
+       when the LLM didn't follow the strip rule).
+
+    Returns a single-entry dict like ``{"sensor": "satellite"}`` or
+    ``{}`` when no unambiguous signal is present.  When sources
+    disagree (e.g. intent.sensor says Satellite but the user message
+    also mentions "model"), returns ``{}`` to avoid penalising
+    candidates incorrectly — this matches the ambiguity policy in
+    ``_modality_intent_from_query``.
+
+    No hardcoded datasets; the helper composes pre-existing general
+    mechanisms (``_modality_intent_from_query``) with structured
+    intent fields.
+    """
+    try:
+        # Lazy import — ``_modality_intent_from_query`` lives in
+        # catalog_tools, and importing it at module scope in runner.py
+        # would create a circular import in some test harnesses.
+        from cmap_agent.tools.catalog_tools import (
+            _modality_intent_from_query,
+        )
+    except Exception:
+        return {}
+
+    # Collect candidate hints from each source as (field, value) pairs.
+    hints: list[tuple[str, str]] = []
+
+    # Source 1: structured intent fields.
+    sensor_val = str(getattr(intent, "sensor", None) or "").strip().lower()
+    make_val = str(getattr(intent, "make", None) or "").strip().lower()
+    if sensor_val:
+        # Map structured sensor values to the vocabulary used in
+        # ``_MODALITY_CUES``.  "in-situ" and "in-Situ" both normalise
+        # to "in-situ"; "satellite" stays "satellite".
+        hints.append(("sensor", sensor_val))
+    if make_val:
+        hints.append(("make", make_val))
+
+    # Source 2: raw user message.
+    msg_intent = _modality_intent_from_query(user_message or "")
+    if msg_intent:
+        k = next(iter(msg_intent))
+        hints.append((k, msg_intent[k]))
+
+    # Source 3: intent.search_query (last resort).
+    sq_intent = _modality_intent_from_query(
+        getattr(intent, "search_query", "") or ""
+    )
+    if sq_intent:
+        k = next(iter(sq_intent))
+        hints.append((k, sq_intent[k]))
+
+    if not hints:
+        return {}
+
+    # Collapse to unique (field, value) pairs.
+    uniq = list(dict.fromkeys(hints))
+    if len(uniq) == 1:
+        field, value = uniq[0]
+        return {field: value}
+
+    # Multiple distinct hints — check whether they're mutually
+    # consistent (all point to the same field:value).  If yes, keep
+    # the single value.  If they disagree, suppress the hint.
+    # Two hints with different field-values are still a conflict
+    # even if fields differ (e.g. sensor:satellite + make:model).
+    return {}
 
 
 def _extract_catalog_results_from_trace(
@@ -633,6 +766,7 @@ def _deterministic_resolve_candidates(
     pending_args: dict[str, Any],
     tool_trace: list[dict[str, Any]],
     ctx: dict[str, Any],
+    user_message: str = "",
 ) -> dict[str, Any]:
     """Build a confirmed candidate list from prior tool trace + fresh searches.
 
@@ -642,8 +776,19 @@ def _deterministic_resolve_candidates(
     2) Augment with fresh KB search (bare variable name, no ROI/filters).
     3) Augment with fresh SQL LIKE search (bare variable name).
     4) Merge, rank, filter to ROI/time, select best.
+
+    Modality intent (v224 fix): the ``search_query`` field coming from
+    ``intent`` has had sensor/make qualifiers stripped by the intent
+    extraction prompt in ``intent.py`` (that prompt rule predates
+    v218/v223).  The stripped query alone therefore loses signals like
+    "satellite" or "model", which defeats the v223 modality-intent
+    mechanism in ``_post_rank_catalog_results``.  The fix is to build
+    a combined modality signal from three sources — structured
+    ``intent.sensor``/``intent.make`` fields, the raw user message,
+    and the stripped query — and pass the resulting hint into the
+    ranking call.  See ``_combined_modality_hint``.
     """
-    # Strip make/sensor words — discovery by variable topic only
+    # Strip filler words only — v219 narrowed this so it keeps intent.
     bare_q = _bare_query(intent.search_query or "")
 
     # 1) Reuse results from prior catalog tool calls (trace + state cache)
@@ -684,26 +829,41 @@ def _deterministic_resolve_candidates(
 
     results = prior_results  # prior results carry correct kb_scores
 
-    # 3) SQL LIKE search — bare variable name, no filters
-    try:
-        sql_res = catalog_search(CatalogSearchArgs(query=bare_q, limit=30), ctx)
-        sql_results = list(sql_res.get("results") or [])
-    except Exception:
-        sql_results = []
+    # The "trust the trace" guard.  When the model's own catalog tool calls
+    # already returned enough candidates (>= 3) in this turn, those are the
+    # most directly relevant results — the model saw the full user query
+    # and routed to the right tool with the right argument shape.  Running
+    # additional fresh searches at this stage can corrupt the ranking by
+    # pulling in datasets that match token overlap but miss the user's
+    # intent (e.g. a bare "chlorophyll" SQL LIKE match that returns a
+    # model-forecast dataset instead of the satellite product the user
+    # asked for).  This guard mirrors the existing KB-skip guard above.
+    _SUFFICIENT_PRIOR = 3
 
-    # 3) Variable-driven augmentation
+    # 3) SQL LIKE search — only when prior results are insufficient.
+    if len(prior_results) >= _SUFFICIENT_PRIOR:
+        sql_results = []
+    else:
+        try:
+            sql_res = catalog_search(CatalogSearchArgs(query=bare_q, limit=30), ctx)
+            sql_results = list(sql_res.get("results") or [])
+        except Exception:
+            sql_results = []
+
+    # 4) Variable-driven augmentation — also gated on prior sufficiency.
     var_tables: list[str] = []
-    try:
-        var_res = catalog_search_variables(
-            CatalogSearchVariablesArgs(query=bare_q, limit=20), ctx
-        )
-        for row in var_res.get("results") or []:
-            if isinstance(row, dict):
-                t = str(row.get("table") or "").strip()
-                if t and t not in var_tables:
-                    var_tables.append(t)
-    except Exception:
-        pass
+    if len(prior_results) < _SUFFICIENT_PRIOR:
+        try:
+            var_res = catalog_search_variables(
+                CatalogSearchVariablesArgs(query=bare_q, limit=20), ctx
+            )
+            for row in var_res.get("results") or []:
+                if isinstance(row, dict):
+                    t = str(row.get("table") or "").strip()
+                    if t and t not in var_tables:
+                        var_tables.append(t)
+        except Exception:
+            pass
 
     var_meta: list[dict[str, Any]] = []
     if var_tables:
@@ -730,12 +890,18 @@ def _deterministic_resolve_candidates(
             seen.add(t)
             merged.append(r)
 
-    # Post-rank using improved scoring (gridded preference, kb_score weight)
+    # Post-rank using improved scoring (gridded preference, kb_score weight).
+    # v224: pass a combined modality hint built from structured intent
+    # fields + raw user message so "satellite" / "model" / "in-situ"
+    # intent survives even though the intent-extraction prompt strips
+    # them from ``search_query``.
+    modality_hint = _combined_modality_hint(intent, user_message)
     try:
         from cmap_agent.tools.catalog_tools import _post_rank_catalog_results
         merged = _post_rank_catalog_results(
             merged, query=bare_q, dt1=intent.dt1, dt2=intent.dt2,
             lat1=intent.lat1, lat2=intent.lat2, lon1=intent.lon1, lon2=intent.lon2,
+            modality_hint=modality_hint,
         )
     except Exception:
         pass
@@ -1150,7 +1316,10 @@ def execute_plan(
                     for t in tool_trace
                 )
                 if used_catalog_tool and not used_data_tool:
-                    resolution = _deterministic_resolve_candidates(intent, {}, tool_trace, ctx)
+                    resolution = _deterministic_resolve_candidates(
+                        intent, {}, tool_trace, ctx,
+                        user_message=active_user_message,
+                    )
                     sel = resolution.get("selected")
                     if isinstance(sel, dict) and sel:
                         # Always confirm — user must explicitly approve dataset choice.
@@ -1335,7 +1504,10 @@ def execute_plan(
 
             # Dataset confirmation guard
             if _should_request_dataset_confirmation(active_user_message, exec_call_name, exec_args, intent=intent) and not confirmed_dataset_table:
-                resolution = _deterministic_resolve_candidates(intent, exec_args, tool_trace, ctx)
+                resolution = _deterministic_resolve_candidates(
+                    intent, exec_args, tool_trace, ctx,
+                    user_message=active_user_message,
+                )
                 sel = resolution.get("selected")
                 if isinstance(sel, dict) and sel:
                     # Always confirm when user hasn't explicitly named the dataset —

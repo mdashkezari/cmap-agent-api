@@ -1,0 +1,22 @@
+[
+  {
+    "p_id": "P002_H",
+    "answer": "Yes. The paper uses standard temperate carbon-to-size relationships and shows they are inappropriate for polar waters. Distinctive technical terms in the paper include allometric, biovolume, and sub-polar.",
+    "targets": ["allometric", "biovolume", "sub-polar"]
+  },
+  {
+    "p_id": "P029_H",
+    "answer": "No. The paper reports iron limitation at the gyre border but not in the center, with nitrogen limitation remaining evident in the central gyre. Distinctive terms include oligotrophic, iron limitation, and dissolved iron.",
+    "targets": ["oligotrophic", "iron limitation", "dissolved iron"]
+  },
+  {
+    "p_id": "P002_HC",
+    "answer": "Pedinellaceae was incorrectly classified as a dinoflagellate and was reassigned to flagellate in the corrected database.",
+    "targets": ["Pedinellaceae", "dinoflagellate", "flagellate"]
+  },
+  {
+    "p_id": "P069_HC",
+    "answer": "The revised database distinguishes undetected, detected but not quantified, and not determined categories, using a nominal value for the detected-but-not-quantified case.",
+    "targets": ["undetected", "detected but not quantified", "not determined", "nifH"]
+  }
+]

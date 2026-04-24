@@ -8,7 +8,7 @@ from typing import Any, Optional, Literal
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
-from cmap_agent.rag.chroma_kb import ChromaKB
+from cmap_agent.rag.retrieval import get_kb, KBBackend
 from cmap_agent.storage.sqlserver import SQLServerStore
 
 log = logging.getLogger(__name__)
@@ -291,7 +291,28 @@ def _deduplicate_to_datasets(
     match_score with a small dataset-type bonus (gridded/satellite preferred).
     This prevents cruise datasets with a variable literally named "Chlorophyll"
     from always outranking satellite products whose canonical variable is "chlor_a".
+
+    Variable-availability gate (v222): after per-table scoring, apply a
+    penalty to tables whose variable list has zero concept-token overlap
+    with the query.  This is the same gate used in
+    ``_post_rank_catalog_results`` (v221) — mirrored here so
+    ``catalog_search`` (SQL-LIKE path) gets the same protection as
+    ``catalog_search_kb_first`` (KB-ranked path).  The penalty is
+    sized to match the gate's original tuning (~5 points) scaled to
+    the smaller score magnitudes produced by ``_match_score`` +
+    ``_dataset_type_bonus`` (typical range ~4–8).
+
+    Modality intent adjustment (v223): when the query names a single
+    modality (``model``, ``in-situ``, ``observation``, etc.), boost
+    matching candidates and penalize recognised-opposite candidates.
+    Also mirrored from ``_post_rank_catalog_results`` so both catalog
+    paths apply the same intent.  Magnitudes scaled to this path's
+    score range.
     """
+    # Concept tokens extracted once for the whole query.
+    concept = _concept_tokens_from_query(q)
+    modality_intent = _modality_intent_from_query(q)
+
     best: dict[str, tuple[float, dict[str, Any]]] = {}
     for row in matched_rows:
         tbl = str(row.get("table_name") or "")
@@ -301,8 +322,41 @@ def _deduplicate_to_datasets(
         if tbl not in best or score > best[tbl][0]:
             best[tbl] = (score, row)
 
+    # Apply variable-availability gate.  Dataset-level — check each
+    # distinct table once, not per variable row (cheaper and correct).
+    # Penalty is scaled to this score range: here scores are typically
+    # in [0, 10] from match + type bonus, vs [0, 40+] in the
+    # post-rank function where kb_score contributes *3.  A penalty of
+    # 3.5 on this scale has the same relative effect as 5 on that
+    # scale.
+    _GATE_PENALTY = 3.5
+    # Modality adjustment is scaled similarly: the KB path uses
+    # +3.0 / -4.0, so the plain path uses +2.0 / -2.5 to keep the
+    # relative weight to the surrounding ~0-10 scores comparable.
+    _MODALITY_BOOST = 2.0
+    _MODALITY_PENALTY = -2.5
+    gated_best: dict[str, tuple[float, dict[str, Any]]] = {}
+    for tbl, (score, row) in best.items():
+        # Build a minimal dataset dict for the gate (it only reads
+        # `table`).  Passing the variable-level row directly would also
+        # work — the gate uses `r.get("table") or r.get("table_name")`
+        # — but we construct a small dict for clarity.
+        if _variable_availability_score({"table": tbl}, concept) == 0.0:
+            score -= _GATE_PENALTY
+        # Modality intent.  Use the representative variable row we
+        # already picked (``row``) since it carries the candidate's
+        # make and sensor.  Compute via the shared helper then rescale
+        # from the KB path's magnitudes to this path's magnitudes.
+        if modality_intent:
+            adj = _modality_score_adjustment(row, modality_intent)
+            if adj > 0:
+                score += _MODALITY_BOOST
+            elif adj < 0:
+                score += _MODALITY_PENALTY
+        gated_best[tbl] = (score, row)
+
     # Sort by descending effective score
-    ranked = sorted(best.values(), key=lambda x: -x[0])
+    ranked = sorted(gated_best.values(), key=lambda x: -x[0])
     results = []
     for score, row in ranked[:limit]:
         d = _row_to_dataset_dict(row, kb_score=score)
@@ -763,6 +817,320 @@ def _is_gridded(r: dict[str, Any]) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# Variable-availability gate (v221 / reviewer 3.4 first intervention)
+# ---------------------------------------------------------------------------
+#
+# Motivation.  The pre-v221 ranker scored candidates by ``kb_score`` (dense
+# retrieval) plus blob-text family-term matches.  Neither signal checks
+# whether the candidate dataset *actually contains a variable* matching
+# the user's query concept.  Consequence: a query like "surface dissolved
+# nitrate" can return ``tblSSS_NRT`` at rank 1 because the KB embedding
+# matched strongly on "surface" and "ocean" tokens, even though SSS has
+# exactly one variable (``sss``) and nothing nitrate-related.
+#
+# This gate queries the variable cache for each candidate dataset and
+# penalises candidates whose variables have zero concept-token overlap
+# with the query.  The penalty is large enough to sink a false match
+# with a high ``kb_score`` past legitimate matches, but not infinite —
+# the dataset can still appear as an alternate if there's no better
+# candidate in the merged pool.
+#
+# Design notes.
+#   * No hardcoded dataset or query strings.  The concept set is derived
+#     from the same family vocabulary used by the rest of the ranker
+#     (``_field_family_from_query``), with a fallback to raw query
+#     tokens (minus stopwords/regional words) when no family matches.
+#   * Queries with no extractable concept (e.g. a single region name,
+#     or purely temporal queries like "2020 data") produce an empty
+#     concept set; the gate becomes a no-op in that case.
+#   * The gate reads from ``_catalog_cache.rows`` which is already
+#     loaded for all catalog operations — no extra database round trips.
+
+
+# Words that identify neither a variable nor a concept.  These are
+# stripped before computing concept tokens so they don't drive the gate.
+# Deliberately conservative — only purely spatial, temporal, or
+# articles/connectives.  Anything that could plausibly appear in a
+# variable name or long_name (e.g. "surface", which is part of "Sea
+# Surface Salinity") is NOT included here.
+_CONCEPT_STOPWORDS: frozenset[str] = frozenset({
+    # Articles / connectives
+    "a", "an", "the", "of", "and", "or", "in", "on", "at", "for",
+    "from", "to", "with", "by", "over", "under",
+    # Directional / regional (region already scored by ROI overlap)
+    "north", "south", "east", "west", "northern", "southern",
+    "eastern", "western",
+    # Ocean basins by name (scored by ROI overlap when coordinates given)
+    "atlantic", "pacific", "indian", "arctic", "antarctic",
+    "mediterranean", "ocean", "sea", "gulf", "bay",
+    # Year/date-ish
+    "year", "years", "month", "months", "day", "days", "date",
+})
+
+
+def _concept_tokens_from_query(q: str) -> set[str]:
+    """Extract concept tokens from a user query for the variable-availability
+    gate.
+
+    Strategy: prefer the family vocabulary when a family is detected, since
+    it already encodes abbreviation/synonym pairs (``chl``/``chlorophyll``,
+    ``sst``/``temperature``).  Fall back to raw non-stopword query tokens
+    so that concepts outside the family dict still gate correctly.
+    """
+    ql = (q or "").lower().strip()
+    if not ql:
+        return set()
+
+    # Family vocabulary — already defined in _field_family_from_query.
+    # Recompute the full term lists here so the gate uses the richer
+    # (abbreviation-inclusive) list from the family definition.
+    _FAMILY_TERMS: dict[str, list[str]] = {
+        "chlorophyll": ["chlorophyll", "chl", "chlor"],
+        "temperature": ["temperature", "sst"],
+        "salinity": ["salinity", "sal", "psu"],
+        "nutrients": ["nitrate", "phosphate", "silicate", "ammonium",
+                      "nutrient", "no3", "po4"],
+        "oxygen": ["oxygen", "o2", "aou"],
+        "carbon": ["carbon", "doc", "poc", "dic", "co2", "alkalinity"],
+        "iron": ["iron", "fe"],
+        "wind": ["wind", "u10", "v10"],
+        "precipitation": ["precipitation", "rain"],
+        "current": ["current", "velocity"],
+        "fluorescence": ["fluorescence", "fluor"],
+    }
+
+    # Collect all families triggered by the query.  A query can hit
+    # multiple families ("carbon and nitrate"); gate on the union.
+    concept: set[str] = set()
+    for _family, terms in _FAMILY_TERMS.items():
+        if any(t in ql for t in terms):
+            concept.update(terms)
+
+    # Fallback: raw query tokens (minus stopwords, minus punctuation)
+    # when no family matched.  Also add raw tokens even when a family
+    # did match — a query like "satellite POC" still benefits from
+    # having "poc" itself as a concept token.
+    import re as _re
+    raw_tokens = _re.findall(r"[a-z0-9]+", ql)
+    for tok in raw_tokens:
+        if tok in _CONCEPT_STOPWORDS:
+            continue
+        if len(tok) < 2:
+            continue
+        # Skip tokens that are pure make/sensor modality words —
+        # these are routing cues, not variable concepts.
+        if tok in {"satellite", "model", "observation", "insitu",
+                   "assimilation", "climatology", "monthly", "daily",
+                   "seasonal", "surface", "hourly", "annual",
+                   "map", "plot", "show", "get", "give"}:
+            continue
+        concept.add(tok)
+
+    return concept
+
+
+def _variable_availability_score(
+    r: dict[str, Any],
+    concept: set[str],
+) -> float:
+    """Return 0 when the candidate has no variable matching any concept
+    token, 1 otherwise.
+
+    Reads ``_catalog_cache.rows`` to look up variables for the candidate
+    table.  ``r`` comes from search results / metadata lookups and
+    carries only dataset-level fields, so variable information has to be
+    joined in.
+
+    Returns 1.0 when concept is empty (gate disabled — no signal to gate
+    on).  Returns 1.0 when the candidate table has no variables listed
+    in the cache (cannot gate without data; do not penalize).
+    """
+    if not concept:
+        return 1.0
+    table = str(r.get("table") or r.get("table_name") or "").strip()
+    if not table:
+        return 1.0
+    cache_rows = _catalog_cache.rows
+    if not cache_rows:
+        return 1.0
+
+    saw_any_variable = False
+    for row in cache_rows:
+        if str(row.get("table_name") or "").strip() != table:
+            continue
+        saw_any_variable = True
+        var_name = str(row.get("variable") or "").lower()
+        long_name = str(row.get("long_name") or "").lower()
+        # Token-level containment in either the short or long name.
+        for tok in concept:
+            if tok in var_name or tok in long_name:
+                return 1.0
+
+    if not saw_any_variable:
+        # Dataset unknown to the cache — cannot gate, don't penalize.
+        return 1.0
+    # Variables exist but none match any concept token.
+    return 0.0
+
+
+# ---------------------------------------------------------------------------
+# Modality intent (v223 / reviewer 3.4 second intervention)
+# ---------------------------------------------------------------------------
+#
+# The variable-availability gate (v221/v222) penalises candidates that
+# have zero concept-token overlap with the query.  That closes one
+# class of failure: wrong dataset because no matching variable exists.
+#
+# A second class remains: the user specifies a *modality* (model,
+# observation, in-situ) but the ranker ignores it.  Example: CS008
+# ``model nitrate climatology`` returns ``tblWOA_Climatology`` at
+# rank 1 — WOA has nitrate (so the gate doesn't fire) but it's
+# observational, not a model, so it doesn't match the user's stated
+# intent.  Example: CS009 ``in-situ chlorophyll from cruises`` returns
+# ``tblCHL_REP`` (satellite) at rank 1 — CHL_REP has chlorophyll (so
+# the gate doesn't fire) but it's satellite, not in-situ.
+#
+# The existing ranker already has asymmetric satellite handling:
+# ``wants_satellite = "satellite" in ql`` triggers +3.0 boost on
+# satellite-sensor candidates and -4.0 on cruise-sensor candidates.
+# v223 generalises this into a symmetric modality-intent system
+# covering all three make values (Observation / Model / Assimilation)
+# and the main sensor-level distinctions (Satellite / In-Situ).
+#
+# Design principles:
+#
+#   * No hardcoded dataset names or prompt-specific logic.  Modality
+#     cues are phrase tokens; field values come from the catalog rows
+#     (``make``, ``sensor``).
+#   * Bidirectional: matching modality gets a boost, opposite
+#     modality gets a penalty, unrelated queries get nothing.
+#   * Mixed intent (user mentions multiple modalities) disables the
+#     mechanism entirely — we don't know which one they want.
+#   * Works from a small phrase→field table rather than per-phrase
+#     special-casing.
+
+
+# Modality cues.  Each entry maps a set of phrase tokens to a
+# (field, value-token) pair.  The field is ``make`` (values:
+# Observation/Model/Assimilation) or ``sensor`` (value tokens from the
+# catalog's Sensor column, e.g. "satellite", "in-situ").
+#
+# Phrase-token matching is substring-based on the lowercased query.
+# That catches "in-situ", "in situ", "insitu", "in-situ measurements"
+# all via the substring "in" + "situ" checks (see
+# ``_modality_intent_from_query``).  It also catches "modeled" /
+# "modelled" / "modeling" all via the substring "model".
+#
+# Field values in ``_candidate_make_sensor`` are compared token-wise
+# (lowercase substring) so "In-Situ" and "in-situ" both match.
+_MODALITY_CUES: tuple[tuple[tuple[str, ...], str, str], ...] = (
+    # phrase tokens,             field,    value-token
+    (("satellite",),             "sensor", "satellite"),
+    (("in situ", "in-situ", "insitu", "cruise", "cruises"),
+                                 "sensor", "in-situ"),
+    (("model", "modeled", "modelled", "modeling", "modelling",
+      "simulation", "simulated"),
+                                 "make",   "model"),
+    (("observation", "observational", "observed", "measured"),
+                                 "make",   "observation"),
+    (("assimilation", "reanalysis"),
+                                 "make",   "assimilation"),
+)
+
+
+def _modality_intent_from_query(q: str) -> dict[str, str]:
+    """Extract a single-modality intent from the query, or {} when
+    ambiguous/absent.
+
+    Returns a dict with at most one entry: ``{"sensor": "satellite"}``,
+    ``{"make": "model"}``, etc.  When the query mentions more than one
+    modality (e.g. "satellite chlorophyll model comparison") the
+    function returns ``{}`` — the ranker should not apply an
+    exclusionary penalty when the user's intent is mixed.
+
+    Mechanically, this scans ``_MODALITY_CUES`` and collects every
+    matched (field, value) tuple.  If exactly one matches, return it;
+    if zero or more than one, return empty.
+
+    No hardcoded dataset or prompt logic — the phrase tokens are
+    generic modality words, not domain-specific handling.
+    """
+    ql = (q or "").lower()
+    if not ql:
+        return {}
+
+    matched: list[tuple[str, str]] = []
+    for phrases, field, value in _MODALITY_CUES:
+        if any(p in ql for p in phrases):
+            matched.append((field, value))
+
+    # Collapse duplicates (e.g. two cue-families that map to the same
+    # (field, value) pair — shouldn't happen with the current table but
+    # defend against future additions).
+    uniq = list(dict.fromkeys(matched))
+    if len(uniq) != 1:
+        return {}
+    field, value = uniq[0]
+    return {field: value}
+
+
+def _modality_score_adjustment(
+    r: dict[str, Any],
+    intent: dict[str, str],
+) -> float:
+    """Return a score adjustment reflecting modality intent match.
+
+    Returns:
+      * +3.0 when the candidate's (make or sensor) matches the intent
+        value (substring, case-insensitive).
+      * -4.0 when the candidate's field value is a known alternative
+        to the intent (e.g. intent is ``sensor: satellite`` but the
+        candidate has ``sensor: in-situ``).
+      * 0.0 when the candidate's field is empty/unknown or the intent
+        is empty — no signal to apply.
+
+    Magnitudes chosen to match the existing ``wants_satellite``
+    handling at line ~820 (boost +3.0, penalty -4.0), so the new
+    modality logic is a generalisation of that existing pattern
+    rather than an additional, uncalibrated layer.
+    """
+    if not intent:
+        return 0.0
+    field = next(iter(intent))           # "sensor" or "make"
+    target = intent[field].lower()
+    cand_value = str(r.get(field) or "").lower()
+    if not cand_value:
+        return 0.0
+
+    if target in cand_value:
+        return 3.0
+
+    # Target absent — is this a known opposite?  Only penalise when
+    # the candidate has a recognised opposite value from the catalog
+    # vocabulary.  Unknown or exotic values (e.g. "Blend", "Uncategorized")
+    # are treated as neutral so we don't over-penalise legitimate
+    # hybrid datasets.
+    _KNOWN_OPPOSITES: dict[str, tuple[str, ...]] = {
+        # field: (target -> recognised other-values)
+        # Entry form: "{field}:{target}" -> other values that are known
+        # explicit opposites.  Anything not in this table is neutral.
+    }
+    key = f"{field}:{target}"
+    # Build opposites on first use (cheap).  Each modality cue in
+    # _MODALITY_CUES that shares a field contributes its value as a
+    # potential opposite for the others.
+    opposites_by_key: dict[str, set[str]] = {}
+    for _phrases, f, v in _MODALITY_CUES:
+        opposites_by_key.setdefault(f, set()).add(v.lower())
+    same_field_values = opposites_by_key.get(field, set())
+    opposites = {v for v in same_field_values if v != target}
+    if any(o in cand_value for o in opposites):
+        return -4.0
+
+    return 0.0
+
+
 def _post_rank_catalog_results(
     results: list[dict[str, Any]],
     *,
@@ -773,12 +1141,27 @@ def _post_rank_catalog_results(
     lat2: Any = None,
     lon1: Any = None,
     lon2: Any = None,
+    modality_hint: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     family = _field_family_from_query(query)
     ql = (query or "").lower()
     wants_satellite = "satellite" in ql
     wants_gridded = any(t in ql for t in ["map", "plot", "gridded", "surface", "global"])
     has_roi = all(v is not None for v in (lat1, lat2, lon1, lon2))
+    concept = _concept_tokens_from_query(query)
+    # Modality intent: use caller-provided hint when available (the
+    # caller may have combined signals from structured intent fields +
+    # raw user message that aren't present in ``query``).  Fall back to
+    # parsing ``query`` directly when no hint is supplied.  An empty
+    # dict from the caller is treated as "no signal" and falls back,
+    # but an explicit caller decision to suppress intent can be made
+    # by passing a sentinel ``{}`` — however, since empty intent means
+    # "no effect" in ``_modality_score_adjustment``, the distinction
+    # doesn't matter in practice.
+    if modality_hint:
+        modality_intent = modality_hint
+    else:
+        modality_intent = _modality_intent_from_query(query)
 
     def score(r: dict[str, Any]) -> tuple[float, float, float]:
         is_point = _looks_point_like(r)
@@ -787,6 +1170,17 @@ def _post_rank_catalog_results(
         s = float(r.get("kb_score") or 0.0) * 3.0
 
         s += _field_match_score(r, family) * 1.5
+
+        # Variable-availability gate: if the candidate has a known
+        # variable list that contains zero concept-token matches, sink
+        # it.  Penalty tuned to outrank a high-``kb_score`` false match
+        # against a moderate-``kb_score`` correct match (delta ~2.5 in
+        # typical nitrate→SSS vs nitrate→Darwin case; penalty -5
+        # provides clear separation without making the candidate
+        # invisible as an alternate).  Returns 1.0 when the gate
+        # cannot apply (empty concept set, unknown table, etc.).
+        if _variable_availability_score(r, concept) == 0.0:
+            s -= 5.0
 
         if _is_gridded(r):
             s += 2.5
@@ -816,10 +1210,20 @@ def _post_rank_catalog_results(
                 s -= 1.5
 
         sensor_val = str(r.get("sensor") or "").lower()
+        # Modality intent adjustment.  Generalises the asymmetric
+        # pre-v223 satellite handling into a symmetric mechanism
+        # covering satellite / in-situ / model / observation /
+        # assimilation.  Returns 0.0 when intent is empty or the
+        # candidate's field is unknown; ``+3.0`` on match; ``-4.0``
+        # when the candidate carries a recognised opposite value.
+        s += _modality_score_adjustment(r, modality_intent)
+        # Retain the narrow ``wants_satellite`` + in-situ-analyzer
+        # anti-pattern: ``thermosalinograph`` / ``elemental analyzer``
+        # are sensor-level cues for specific instruments that are
+        # rarely what a user asking for "satellite" wants, but they
+        # aren't covered by the modality intent table.
         if wants_satellite:
-            if "satellite" in sensor_val:
-                s += 3.0
-            elif "thermosalinograph" in sensor_val or "elemental analyzer" in sensor_val:
+            if "thermosalinograph" in sensor_val or "elemental analyzer" in sensor_val:
                 s -= 4.0
 
         if wants_gridded and _looks_map_friendly(r):
@@ -870,7 +1274,7 @@ def _expand_query_text_for_kb(q: str) -> str:
 
 
 def _kb_semantic_table_scores(
-    kb: ChromaKB,
+    kb: KBBackend,
     *,
     query: str,
     tables: list[str],
@@ -963,7 +1367,7 @@ def _strip_sensor_words(q: str) -> str:
 def catalog_search_kb_first(args: CatalogSearchKBFArgs, ctx: dict) -> dict:
     """KB-first semantic dataset discovery with cache-backed SQL augmentation."""
     cache, store = _get_cache(ctx)
-    kb: ChromaKB | None = ctx.get("kb")
+    kb: KBBackend | None = ctx.get("kb")
 
     q = (args.query or "").strip()
     bare_q = _bare_query(q)

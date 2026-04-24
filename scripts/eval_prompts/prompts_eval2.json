@@ -1,0 +1,416 @@
+[
+  {
+    "p_id": "P001_C",
+    "dataset": "Australian_Phytoplankton_Database",
+    "ref": "10.1038sdata.2016.111_1467.pdf",
+    "prompt": "What errors were corrected in the Australian phytoplankton database and how did the total number of records change after the update?"
+  },
+  {
+    "p_id": "P002_C",
+    "dataset": "Australian_Phytoplankton_Database",
+    "ref": "10.1038sdata.2016.111_1467.pdf",
+    "prompt": "Which functional group was incorrectly assigned to Pedinellaceae in the Australian phytoplankton database, and what was it changed to?"
+  },
+  {
+    "p_id": "P003_C",
+    "dataset": "Australian_Phytoplankton_Database",
+    "ref": "10.1038sdata.2016.111_1467.pdf",
+    "prompt": "In the Australian phytoplankton database corrigendum, which institution was corrected as the custodian for datasets P744, P746, P748, and P778?"
+  },
+  {
+    "p_id": "P004_C",
+    "dataset": "CLASiC_Water_Column",
+    "ref": "10.3389fmars.2019.00286_1446.pdf",
+    "prompt": "What was unusual about how elemental quotas of cold-water diatoms compare to temperate diatoms grown at warmer temperatures?"
+  },
+  {
+    "p_id": "P005_C",
+    "dataset": "CLASiC_Water_Column",
+    "ref": "10.3389fmars.2019.00286_1446.pdf",
+    "prompt": "Which diatom strain was consistently identified as an outlier in the allometric analysis of cold-water diatom elemental quotas, and why was excluding it important?"
+  },
+  {
+    "p_id": "P006_C",
+    "dataset": "CLASiC_Water_Column",
+    "ref": "10.3389fmars.2019.00286_1446.pdf",
+    "prompt": "What growth conditions and temperature were used to culture the polar diatom strains in the CLASiC study, and how many strains were examined?"
+  },
+  {
+    "p_id": "P007_C",
+    "dataset": "CLASiC_Water_Column",
+    "ref": "10.3389fmars.2019.00286_1446.pdf",
+    "prompt": "How do large diatoms grown at polar temperatures compare to smaller diatoms in terms of achieving maximum growth rates, and what's the proposed reason?"
+  },
+  {
+    "p_id": "P008_C",
+    "dataset": "Darwin-MITgcm_Climatology",
+    "ref": "10.5194bg_12_4447_2015_11.pdf",
+    "prompt": "What ocean model was presented in the Dutkiewicz et al. 2015 study, and which optically important water constituents did it explicitly include?"
+  },
+  {
+    "p_id": "P009_C",
+    "dataset": "Darwin-MITgcm_Climatology",
+    "ref": "10.5194bg_12_4447_2015_11.pdf",
+    "prompt": "How does CDOM (colored dissolved organic matter) compare to phytoplankton and water molecules in terms of light attenuation at different wavelengths according to the Darwin model?"
+  },
+  {
+    "p_id": "P010_C",
+    "dataset": "Darwin-MITgcm_Climatology",
+    "ref": "10.5194gmd_8_3071_2015_12.pdf",
+    "prompt": "What is ECCO v4 and what time period does its baseline ocean state estimation cover?"
+  },
+  {
+    "p_id": "P011_C",
+    "dataset": "Darwin-MITgcm_Climatology",
+    "ref": "10.5194gmd_8_3071_2015_12.pdf",
+    "prompt": "According to the ECCO v4 framework, what types of model errors were found to dominate over structural uncertainty?"
+  },
+  {
+    "p_id": "P012_C",
+    "dataset": "Darwin-MITgcm_Climatology",
+    "ref": "10.5194os_11_839_2015_13.pdf",
+    "prompt": "How did the ECCO v4 turbulent transport parameter adjustments affect long-term model simulations for both assimilated and independent variables?"
+  },
+  {
+    "p_id": "P013_C",
+    "dataset": "Darwin-MITgcm_Climatology",
+    "ref": "10.5194os_11_839_2015_13.pdf",
+    "prompt": "What observational platform was used as the main constraint for estimating regional turbulent transport rates in the ocean, and what depth did it cover?"
+  },
+  {
+    "p_id": "P014_C",
+    "dataset": "Darwin-MITgcm_Climatology",
+    "ref": "10.5281zenodo.1343303_15_description.txt",
+    "prompt": "What is the CBIOMES-global model, and which ocean circulation model and plankton model does it build on? How many plankton types are included in the initial version?"
+  },
+  {
+    "p_id": "P015_C",
+    "dataset": "Darwin_Nutrient",
+    "ref": "10.5194bg_12_4447_2015_68.pdf",
+    "prompt": "In the Darwin/MIT coupled optical-biogeochemical model, what was shown to be crucial for capturing the variability in the depth of the subsurface chlorophyll maximum?"
+  },
+  {
+    "p_id": "P016_C",
+    "dataset": "Darwin_Nutrient",
+    "ref": "10.5194bg_12_4447_2015_68.pdf",
+    "prompt": "Which oceanic regions show the greatest relative importance of water molecules for light attenuation according to the Darwin biogeochemical model?"
+  },
+  {
+    "p_id": "P017_C",
+    "dataset": "DeepDOM_nutrients",
+    "ref": "10.3389fmars.2017.00200_1544.pdf",
+    "prompt": "What spatial and depth patterns in extracellular enzyme activity did Hoarfrost and Arnosti find across the Atlantic Ocean, and what environmental factor was most predictive?"
+  },
+  {
+    "p_id": "P018_C",
+    "dataset": "DeepDOM_nutrients",
+    "ref": "10.3389fmars.2017.00200_1544.pdf",
+    "prompt": "What was the relationship between water column stratification and polysaccharide hydrolysis activity in the DeepDOM study?"
+  },
+  {
+    "p_id": "P019_C",
+    "dataset": "DeepDOM_nutrients",
+    "ref": "10.3389fmicb.2016.01534_1543.pdf",
+    "prompt": "How did viral abundance vary with depth in the DeepDOM Atlantic latitudinal transect, and what was the strongest predictor of log viral abundance?"
+  },
+  {
+    "p_id": "P020_C",
+    "dataset": "DeepDOM_nutrients",
+    "ref": "10.3389fmicb.2016.01534_1543.pdf",
+    "prompt": "What were the two pelagiphage types (SAR11 phages) studied in the DeepDOM cruise, and how did their depth distributions differ?"
+  },
+  {
+    "p_id": "P021_C",
+    "dataset": "DeepDOM_nutrients",
+    "ref": "10.3389fmicb.2016.01534_1543.pdf",
+    "prompt": "What was notable about the latitudinal distribution of pelagiphage HTVC008M in the Atlantic Ocean transect from 10\u00b0N to 40\u00b0S?"
+  },
+  {
+    "p_id": "P022_C",
+    "dataset": "DeepDOM_nutrients",
+    "ref": "10.1371journal.pone.0124505_1551.pdf",
+    "prompt": "What deep ocean organisms were the focus of the Rocke et al. PLoS ONE study associated with the DeepDOM dataset, and what ecological process was being investigated?"
+  },
+  {
+    "p_id": "P023_C",
+    "dataset": "DeepDOM_nutrients",
+    "ref": "10.3390metabo10030105_1550.pdf",
+    "prompt": "What aspect of marine microorganism biology was the metabolomics paper associated with the DeepDOM dataset investigating?"
+  },
+  {
+    "p_id": "P024_C",
+    "dataset": "GRUMP",
+    "ref": "10.1038s41597_025_05423_9_1494.pdf",
+    "prompt": "What makes the GRUMP database unique compared to previous global microbial ocean studies, especially regarding comparison across size fractions and biological domains?"
+  },
+  {
+    "p_id": "P025_C",
+    "dataset": "GRUMP",
+    "ref": "10.1038s41597_025_05423_9_1494.pdf",
+    "prompt": "What universal primer pair was used in GRUMP to simultaneously amplify bacteria, archaea, and eukaryotes, and what was the average contribution of each domain to rRNA gene abundance?"
+  },
+  {
+    "p_id": "P026_C",
+    "dataset": "GRUMP",
+    "ref": "10.1038s41597_025_05423_9_1494.pdf",
+    "prompt": "How does the relative abundance of eukaryotes in the GRUMP dataset change at higher latitudes compared to the global average?"
+  },
+  {
+    "p_id": "P027_C",
+    "dataset": "GRUMP",
+    "ref": "10.5281zenodo.15586714_1510_description.txt",
+    "prompt": "What ocean transects and programs were included in GRUMP sample collection, and over what time period were samples gathered?"
+  },
+  {
+    "p_id": "P028_C",
+    "dataset": "GRUMP",
+    "ref": "10.5281zenodo.15586714_1510_description.txt",
+    "prompt": "What special sequencing challenge exists for 18S sequences using the 515Y/926R primers, and how was this addressed in the GRUMP pipeline?"
+  },
+  {
+    "p_id": "P029_C",
+    "dataset": "GRUMP",
+    "ref": "10.5281zenodo.15586714_1510_description.txt",
+    "prompt": "How did GRUMP handle the known Illumina sequencing bias against longer 18S sequences, and what correction factor approach was used?"
+  },
+  {
+    "p_id": "P030_C",
+    "dataset": "GRUMP",
+    "ref": "10.1038sdata.2018.176_1497.pdf",
+    "prompt": "What is the Tara Oceans metagenome study referenced in GRUMP, and what types of data did it collect across ocean basins?"
+  },
+  {
+    "p_id": "P031_C",
+    "dataset": "GRUMP",
+    "ref": "10.1038sdata.2018.130_1500.pdf",
+    "prompt": "What Australian monitoring program systematically monitored marine pelagic microbiota on a continental scale, and what kind of temporal data does it provide?"
+  },
+  {
+    "p_id": "P032_C",
+    "dataset": "GRUMP",
+    "ref": "10.1038s43705_021_00074_4_1508.pdf",
+    "prompt": "What were the main findings about Arctic Ocean microbiome seasonality in the FRAM Strait study, specifically regarding the polar night period?"
+  },
+  {
+    "p_id": "P033_C",
+    "dataset": "GRUMP",
+    "ref": "10.3389fmars.2024.1358174_1506.pdf",
+    "prompt": "What does the AMT (Atlantic Meridional Transect) programme cover, and for how long has it been running?"
+  },
+  {
+    "p_id": "P034_C",
+    "dataset": "HL2A_diel_metagenomics",
+    "ref": "10.1073pnas.1714821114_745.pdf",
+    "prompt": "What did the Aylward et al. study reveal about the long-term stability of dominant dsDNA viruses in the ocean euphotic zone?"
+  },
+  {
+    "p_id": "P035_C",
+    "dataset": "HL2A_diel_metagenomics",
+    "ref": "10.1073pnas.1714821114_745.pdf",
+    "prompt": "What was found about the timing of cyanophage transcriptional activity and how did it relate to Prochlorococcus DNA replication patterns?"
+  },
+  {
+    "p_id": "P036_C",
+    "dataset": "HL2A_diel_metagenomics",
+    "ref": "10.1073pnas.1714821114_745.pdf",
+    "prompt": "What proportion of dsDNA viral scaffolds in the ALOHA euphotic zone showed diel periodicity in their transcriptional profiles, and what does this tell us about viral replication timing?"
+  },
+  {
+    "p_id": "P037_C",
+    "dataset": "HaDS_Diel_Multi_Omics",
+    "ref": "10.5281zenodo.15643373_1515_description.txt",
+    "prompt": "What was the sampling design of the Hawaii Diel Sampling (HaDS) survey, and which two environments were sampled?"
+  },
+  {
+    "p_id": "P038_C",
+    "dataset": "HaDS_Diel_Multi_Omics",
+    "ref": "10.5281zenodo.15643373_1515_description.txt",
+    "prompt": "What types of multi-omic data were generated in the HaDS study, and what was the overarching scientific goal?"
+  },
+  {
+    "p_id": "P039_C",
+    "dataset": "HaDS_Diel_Multi_Omics",
+    "ref": "10.7717peerj.12274_1512.pdf",
+    "prompt": "In the K\u0101ne\u02bbohe Bay time-series SAR11 study, how did the diversity and distribution of SAR11 subclades differ between the coastal and offshore environments?"
+  },
+  {
+    "p_id": "P040_C",
+    "dataset": "HaDS_Diel_Multi_Omics",
+    "ref": "10.7717peerj.12274_1512.pdf",
+    "prompt": "What was the relationship between SAR11 offshore subclades and Prochlorococcus abundance in the K\u0101ne\u02bbohe Bay transect study?"
+  },
+  {
+    "p_id": "P041_C",
+    "dataset": "HaDS_Diel_Multi_Omics",
+    "ref": "10.7717peerj.12274_1512.pdf",
+    "prompt": "What fraction of SAR11 diversity was represented by the seven most dominant ASVs in the K\u0101ne\u02bbohe Bay\u2013offshore transect, and what subclades did they span?"
+  },
+  {
+    "p_id": "P042_C",
+    "dataset": "MODIS_POC_cl1",
+    "ref": "10.5194bg_5_171_2008_689.pdf",
+    "prompt": "What range of particulate organic carbon concentrations was observed in the BIOSOPE and Atlantic cruise data, and what environmental conditions drove the extremes?"
+  },
+  {
+    "p_id": "P043_C",
+    "dataset": "MODIS_POC_cl1",
+    "ref": "10.5194bg_5_171_2008_689.pdf",
+    "prompt": "What was the preferred algorithm approach for estimating surface POC from satellite remote sensing reflectance according to Stramski et al. 2008?"
+  },
+  {
+    "p_id": "P044_C",
+    "dataset": "MODIS_POC_cl1",
+    "ref": "10.5194bg_5_171_2008_689.pdf",
+    "prompt": "How was the relationship between beam attenuation at 660 nm and the blue-to-green reflectance ratio described in terms of robustness across different ocean provinces?"
+  },
+  {
+    "p_id": "P045_C",
+    "dataset": "Mercator_Pisces_Biogeochem_Climatology",
+    "ref": "10.5194gmd_8_2465_2015_8.pdf",
+    "prompt": "What are the two phytoplankton compartments and two zooplankton size classes represented in the PISCES-v2 biogeochemical model?"
+  },
+  {
+    "p_id": "P046_C",
+    "dataset": "Mercator_Pisces_Biogeochem_Climatology",
+    "ref": "10.5194gmd_8_2465_2015_8.pdf",
+    "prompt": "How does PISCES-v2 handle iron and silicon quotas differently from carbon, nitrogen, and phosphorus stoichiometry?"
+  },
+  {
+    "p_id": "P047_C",
+    "dataset": "Mercator_Pisces_Biogeochem_Climatology",
+    "ref": "10.5194gmd_8_2465_2015_8.pdf",
+    "prompt": "What was the modeled imbalance between nitrogen sources and sinks in PISCES-v2, and why were sediment denitrification estimates lower than observational estimates?"
+  },
+  {
+    "p_id": "P048_C",
+    "dataset": "Mercator_Pisces_Biogeochem_Climatology",
+    "ref": "10.5194gmd_8_2465_2015_8.pdf",
+    "prompt": "In which high-latitude ocean regions did the PISCES model successfully reproduce observed moderate chlorophyll levels, and where did it have problems?"
+  },
+  {
+    "p_id": "P049_C",
+    "dataset": "RCLV_atlas_version2",
+    "ref": "10.5194essd_16_1475_2024_1276.pdf",
+    "prompt": "What is a Rotationally Coherent Lagrangian Vortex (RCLV) and how does it differ from an eddy identified using the Sea Level Anomaly method?"
+  },
+  {
+    "p_id": "P050_C",
+    "dataset": "RCLV_atlas_version2",
+    "ref": "10.5194essd_16_1475_2024_1276.pdf",
+    "prompt": "What percentage of Sea Level Anomaly eddies in the North Pacific Subtropical Gyre were classified as coherent at some point during their lifetimes?"
+  },
+  {
+    "p_id": "P051_C",
+    "dataset": "RCLV_atlas_version2",
+    "ref": "10.5194essd_16_1475_2024_1276.pdf",
+    "prompt": "How was the RCLV atlas designed to facilitate biogeochemical research, and with what data products was it synchronized?"
+  },
+  {
+    "p_id": "P052_C",
+    "dataset": "RCLV_atlas_version2",
+    "ref": "10.5281zenodo.10849221_1277_description.txt",
+    "prompt": "What is the temporal resolution of the RCLV atlas, and how is eddy age calculated? What was the minimum coherence duration for eddies in version 1?"
+  },
+  {
+    "p_id": "P053_C",
+    "dataset": "RCLV_atlas_version2",
+    "ref": "10.5281zenodo.10849221_1277_description.txt",
+    "prompt": "What new feature does version 2 of the RCLV atlas introduce compared to version 1, specifically regarding eddy genesis?"
+  },
+  {
+    "p_id": "P054_C",
+    "dataset": "SOCATv2022",
+    "ref": "httpswww.socat.infowp_contentuploads202206SOCATv2022_Data_Us_649.pdf",
+    "prompt": "What are users of SOCAT data products expected to do regarding the data providers and investigators who contributed to the dataset?"
+  },
+  {
+    "p_id": "P055_C",
+    "dataset": "SOCATv2022",
+    "ref": "httpswww.socat.infowp_contentuploads202206SOCATv2022_Data_Us_649.pdf",
+    "prompt": "Which international programs endorse SOCAT, and what is the purpose of the atlas?"
+  },
+  {
+    "p_id": "P056_C",
+    "dataset": "SOCATv2022",
+    "ref": "httpswww.socat.infowp_contentuploads202206SOCATv2022_Data_Us_649.pdf",
+    "prompt": "What specific citation is required when using SOCAT versions 3 through 2021, and what additional reference is needed for gridded products?"
+  },
+  {
+    "p_id": "P057_C",
+    "dataset": "all_SeaFlow_cruises_v1_5",
+    "ref": "10.1038s41597_019_0292_2_567.html",
+    "prompt": "What is SeaFlow and what makes it different from conventional flow cytometers for measuring phytoplankton in the ocean?"
+  },
+  {
+    "p_id": "P058_C",
+    "dataset": "all_SeaFlow_cruises_v1_5",
+    "ref": "10.1038s41597_019_0292_2_567.html",
+    "prompt": "How many oceanographic cruises and how many kilometers of ocean did the SeaFlow v1 dataset cover, and over what time period?"
+  },
+  {
+    "p_id": "P059_C",
+    "dataset": "all_SeaFlow_cruises_v1_5",
+    "ref": "10.1038s41597_019_0292_2_567.html",
+    "prompt": "What phytoplankton populations did SeaFlow measure, and what is the size cutoff for organisms in the dataset?"
+  },
+  {
+    "p_id": "P060_C",
+    "dataset": "all_SeaFlow_cruises_v1_5",
+    "ref": "10.1038s41597_019_0292_2_567.html",
+    "prompt": "How were equivalent spherical diameter (ESD) and carbon quotas estimated from SeaFlow light scatter measurements?"
+  },
+  {
+    "p_id": "P061_C",
+    "dataset": "all_SeaFlow_cruises_v1_5",
+    "ref": "10.1038s41597_019_0292_2_567.html",
+    "prompt": "What quality control criteria were applied to SeaFlow data files to identify outliers during instrument operation?"
+  },
+  {
+    "p_id": "P062_C",
+    "dataset": "all_SeaFlow_cruises_v1_5",
+    "ref": "10.1038s41597_019_0292_2_567.html",
+    "prompt": "How well did SeaFlow cell abundance estimates compare to measurements made with a BD Influx flow cytometer using fixed samples?"
+  },
+  {
+    "p_id": "P063_C",
+    "dataset": "global_diazotroph_nifH",
+    "ref": "10.1111j.1462_2920.2008.01796.x_408.pdf",
+    "prompt": "Which diazotroph group was most abundant in the Eastern Equatorial Atlantic in June 2007 according to the Foster et al. study, and in which specific geographic area was its gene copy number highest?"
+  },
+  {
+    "p_id": "P064_C",
+    "dataset": "global_diazotroph_nifH",
+    "ref": "10.1111j.1462_2920.2008.01796.x_408.pdf",
+    "prompt": "What was historically significant about the detection of Calothrix symbiont in the Eastern Equatorial Atlantic study?"
+  },
+  {
+    "p_id": "P065_C",
+    "dataset": "global_diazotroph_nifH",
+    "ref": "10.1111j.1462_2920.2008.01796.x_408.pdf",
+    "prompt": "What environmental factors were identified as mainly controlling the distribution of different diazotroph groups including the symbiotic cyanobacteria in the Eastern Equatorial Atlantic?"
+  },
+  {
+    "p_id": "P066_C",
+    "dataset": "global_diazotroph_nifH",
+    "ref": "10.5194bg_5_215_2008_419.pdf",
+    "prompt": "What was the iron status of primary productivity in the Southeast Pacific gyre center, and how did this differ from the gyre borders?"
+  },
+  {
+    "p_id": "P067_C",
+    "dataset": "global_diazotroph_nifH",
+    "ref": "10.5194bg_5_215_2008_419.pdf",
+    "prompt": "Why was the South Pacific gyre described as unique with respect to phytoplankton populations and nitrogen fixation?"
+  },
+  {
+    "p_id": "P068_C",
+    "dataset": "global_diazotroph_nifH",
+    "ref": "10.5281zenodo.4968554_413_description.txt",
+    "prompt": "What is the origin of the global diazotroph nifH qPCR database and what key corrections were made to the Tang et al. 2019 version?"
+  },
+  {
+    "p_id": "P069_C",
+    "dataset": "global_diazotroph_nifH",
+    "ref": "10.5281zenodo.4968554_413_description.txt",
+    "prompt": "How does the global diazotroph nifH database distinguish between samples where the target was undetected, detected but not quantified, and not determined?"
+  }
+]

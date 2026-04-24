@@ -1,0 +1,29 @@
+[
+  {
+    "p_id": "P100_M",
+    "answer": "Samples with a sequencing depth below 5000 were filtered out of the dataset because they were considered too small to be statistically useful. The threshold value was 5000 reads per sample."
+  },
+  {
+    "p_id": "P101_M",
+    "answer": "The 515Y and 926R universal rRNA gene primers were used. The 515Y forward primer sequence is GTGYCAGCMGCCGCGGTAA and the 926R reverse primer sequence is CCGYCAATTYMTTTRAGTTT."
+  },
+  {
+    "p_id": "P102_M",
+    "answer": "FRAM Strait samples in GRUMP were sequenced using MiSeq technology (2 x 300 bp), which differed from most other cruises that used HiSeq Rapid Run technology (2 x 250 bp).",
+    "targets": ["MiSeq", "2 x 300", "FRAM"],
+    "shape": "sequence_literal"
+  },
+  {
+    "p_id": "P103_M",
+    "answer": "The MOSAiC samples were sequenced using MiSeq technology (2 x 300 bp) — the same platform used for FRAM.",
+    "targets": ["MiSeq", "2 x 300", "MOSAiC"],
+    "shape": "sequence_literal"
+  },
+  {
+    "p_id": "P104_M",
+    "answer": "The PRJNA accession for the BioGEOTRACES GA02 samples is PRJNA1194189 (shared with GA10).",
+    "targets": ["PRJNA1194189", "GA02", "BioGEOTRACES"],
+    "shape": "sequence_literal"
+  }
+]
+

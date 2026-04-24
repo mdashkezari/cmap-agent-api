@@ -1,4 +1,4 @@
-"""kb_sync — build/refresh the Chroma KB directly from CMAP metadata tables.
+"""kb_sync — build/refresh the KB directly from CMAP metadata tables.
 
 Data is sourced from:
   - udfCatalog()         — all variables with dataset metadata, keywords, coverage
@@ -7,6 +7,14 @@ Data is sourced from:
 No intermediate agent.Catalog* tables are used. The script can be run
 at any time to pick up new datasets or updated metadata without requiring
 a separate catalog sync step first.
+
+Supports two backends (controlled by CMAP_AGENT_KB_BACKEND or --target):
+  - chroma: legacy ChromaDB (dense-only, local file-based)
+  - qdrant: Qdrant with hybrid dense + BM25 search
+
+The --target flag allows directing sync output to a specific backend,
+overriding the default from settings.  This is useful for running local
+validation before pushing to a production Qdrant Cloud instance.
 
 Entry point: cmap-agent-sync-kb  (see pyproject.toml [project.scripts])
 """
@@ -33,7 +41,8 @@ def _sanitize_text(s: str) -> str:
     return s.strip() or " "
 
 from cmap_agent.storage.sqlserver import SQLServerStore
-from cmap_agent.rag.chroma_kb import ChromaKB
+from cmap_agent.rag.retrieval import get_kb
+from cmap_agent.config.settings import settings
 
 URL_RE = re.compile(r"https?://\S+", re.I)
 DOI_RE = re.compile(r"(10\.\d{4,9}/[^\s]+)", re.I)
@@ -301,19 +310,76 @@ def _file_hash(path: Path) -> str:
     return hashlib.sha1(path.read_bytes()).hexdigest()[:12]
 
 
+# Re-exported as ``_fix_pdf_number_breaks`` for backward compatibility with
+# any external callers or older regression scripts.  The canonical
+# implementation lives in ``sync.text_fixes`` so it is dependency-free and
+# independently unit-testable.
+from cmap_agent.sync.text_fixes import fix_pdf_number_breaks as _fix_pdf_number_breaks  # noqa: E402
+
+
 def _extract_text_from_file(path: Path) -> str | None:
-    """Extract plain text from PDF, HTML, Markdown, or plain text files."""
+    """Extract plain text from PDF, HTML, Markdown, or plain text files.
+
+    For PDFs, uses PyMuPDF block-level extraction.  Repeated journal page
+    headers (e.g. "2 Scientific Data | (2025) 12:1078 | https://doi.org/...")
+    are suppressed by dropping blocks in the top 10 % of the page that match
+    a journal-metadata pattern.  Footer zone is intentionally NOT filtered —
+    methods text in two-column layouts can appear at low y-positions and
+    false-positive footer drops cause content loss.
+
+    Post-processing fixes garbled numbers from two-column PDF line breaks.
+    For example, "ranged from 1 – 1, 250, 359" (MuPDF artefact from a soft
+    hyphen or en-dash at a line break inside the number 1,250,359) is
+    normalised back to "ranged from 1 to 1,250,359".
+    """
     suffix = path.suffix.lower()
 
     if suffix == ".pdf":
         try:
             import fitz  # pymupdf
+            import re as _re
+
             doc = fitz.open(str(path))
-            parts = []
+
+            # Matches clear journal header metadata — kept intentionally narrow
+            # to avoid dropping legitimate content.
+            _JOURNAL_HEADER_PAT = _re.compile(
+                r"(scientific\s+data|nature\s+communications|nature\s+methods"
+                r"|plos\s+one|frontiers\s+in\s+\w|molecular\s+ecology\s+resources"
+                r"|doi\.org/10\.\d{4}|www\.nature\.com|www\.frontiersin\.org)",
+                _re.I,
+            )
+
+            all_parts: list[str] = []
+
             for page in doc:
-                parts.append(page.get_text())
+                page_h = page.rect.height
+                blocks = page.get_text("blocks")
+                # Sort top-to-bottom, left-to-right for reading order
+                blocks.sort(key=lambda b: (b[1], b[0]))
+
+                page_parts: list[str] = []
+                for b in blocks:
+                    if b[6] != 0:  # skip image blocks
+                        continue
+                    text = b[4].strip()
+                    if not text:
+                        continue
+                    y0 = b[1]
+                    # Drop only header-zone blocks that clearly are journal metadata
+                    if y0 < page_h * 0.10 and _JOURNAL_HEADER_PAT.search(text):
+                        continue
+                    page_parts.append(text)
+
+                if page_parts:
+                    all_parts.append("\n".join(page_parts))
+
             doc.close()
-            return "\n".join(parts).strip() or None
+            raw = "\n\n".join(all_parts).strip()
+            if raw:
+                raw = _fix_pdf_number_breaks(raw)
+            return raw or None
+
         except Exception as e:
             import logging
             logging.getLogger(__name__).warning("PDF extract failed %s: %s", path.name, e)
@@ -408,7 +474,7 @@ def _ingest_reference_bank(
                 "title": f"{short_name} — {fpath.stem}",
             }
 
-            for idx, chunk in enumerate(_split_text(text_content, max_chars=7_000), start=1):
+            for idx, chunk in enumerate(_split_text(text_content, max_chars=settings.CMAP_AGENT_KB_REFBANK_CHUNK_SIZE), start=1):
                 cid = base_id if idx == 1 else f"{base_id}#chunk{idx}"
                 cmeta = dict(meta_base)
                 if idx != 1:
@@ -421,9 +487,38 @@ def _ingest_reference_bank(
     return added
 
 
+def _build_kb(target: str | None, collection: str | None = None):
+    """Instantiate the appropriate KB backend.
+
+    If *target* is given it overrides the ``CMAP_AGENT_KB_BACKEND`` setting.
+    Accepted values: ``chroma``, ``qdrant``.
+    """
+    import os
+    from cmap_agent.config.settings import settings
+
+    effective = (target or settings.CMAP_AGENT_KB_BACKEND).lower().strip()
+
+    if effective == "qdrant":
+        from cmap_agent.rag.qdrant_kb import QdrantKB
+        kb = QdrantKB(
+            url=os.environ.get("QDRANT_URL") or settings.QDRANT_URL,
+            api_key=os.environ.get("QDRANT_API_KEY") or settings.QDRANT_API_KEY,
+            collection=collection or settings.CMAP_AGENT_KB_COLLECTION,
+        )
+        kb.ensure_collection()
+        return kb
+
+    # Default: chroma
+    from cmap_agent.rag.chroma_kb import ChromaKB
+    return ChromaKB(
+        persist_dir=settings.CMAP_AGENT_CHROMA_DIR,
+        collection=collection or settings.CMAP_AGENT_KB_COLLECTION,
+    )
+
+
 def main():
     ap = argparse.ArgumentParser(
-        description="Build/refresh the Chroma KB directly from CMAP metadata tables."
+        description="Build/refresh the KB directly from CMAP metadata tables."
     )
     ap.add_argument("--rebuild", action="store_true",
                     help="Delete all existing KB docs before re-indexing.")
@@ -435,15 +530,37 @@ def main():
                     help="Path to reference bank root. Default: notrack/reference_bank/.")
     ap.add_argument("--skip-bank", action="store_true",
                     help="Skip reference bank ingestion (catalog metadata only).")
+    ap.add_argument(
+        "--target",
+        choices=["chroma", "qdrant"],
+        default=None,
+        help=(
+            "KB backend to sync into: 'chroma' (legacy local) or 'qdrant' "
+            "(hybrid search). Defaults to CMAP_AGENT_KB_BACKEND setting."
+        ),
+    )
+    ap.add_argument(
+        "--collection",
+        default=None,
+        help="Override the collection/index name (useful for A/B testing).",
+    )
     args = ap.parse_args()
 
     store = SQLServerStore.from_env()
-    kb = ChromaKB()
+    kb = _build_kb(args.target, collection=args.collection)
+    backend_label = args.target or settings.CMAP_AGENT_KB_BACKEND
+    print(f"KB backend: {backend_label}")
 
     if args.rebuild:
-        ids = kb.all_ids()
-        kb.delete_ids(ids)
-        print(f"Deleted {len(ids)} existing KB docs.")
+        if hasattr(kb, "delete_collection"):
+            # Qdrant: drop and recreate the collection for a clean rebuild
+            kb.delete_collection()
+            kb.ensure_collection()
+            print("Deleted and recreated collection (full rebuild).")
+        else:
+            ids = kb.all_ids()
+            kb.delete_ids(ids)
+            print(f"Deleted {len(ids)} existing KB docs.")
 
     print("Loading catalog from udfCatalog()...")
     with store.engine.connect() as conn:
@@ -500,7 +617,7 @@ def main():
         # Dataset document
         doc_text, meta = _dataset_doc(row, refs_strs, vars_list)
         doc_id = f"ds:{table}"
-        for idx, chunk in enumerate(_split_text(doc_text, max_chars=7_000), start=1):
+        for idx, chunk in enumerate(_split_text(doc_text, max_chars=settings.CMAP_AGENT_KB_CATALOG_CHUNK_SIZE), start=1):
             cid = doc_id if idx == 1 else f"{doc_id}#chunk{idx}"
             cmeta = dict(meta)
             if idx != 1:
@@ -511,7 +628,7 @@ def main():
 
         # Reference documents (one per citation)
         for doc_id2, meta2, txt in _reference_docs(table, did, refs_list_raw):
-            for idx, chunk in enumerate(_split_text(txt, max_chars=7_000), start=1):
+            for idx, chunk in enumerate(_split_text(txt, max_chars=settings.CMAP_AGENT_KB_CATALOG_CHUNK_SIZE), start=1):
                 cid = doc_id2 if idx == 1 else f"{doc_id2}#chunk{idx}"
                 cmeta = dict(meta2)
                 if idx != 1:
@@ -538,7 +655,7 @@ def main():
                 "title": f"{v.get('VarName')} ({table})",
                 "source": "udfCatalog",
             }
-            for idx, chunk in enumerate(_split_text(vtxt, max_chars=7_000), start=1):
+            for idx, chunk in enumerate(_split_text(vtxt, max_chars=settings.CMAP_AGENT_KB_CATALOG_CHUNK_SIZE), start=1):
                 cid = vid if idx == 1 else f"{vid}#chunk{idx}"
                 cmeta = dict(vmeta)
                 if idx != 1:
@@ -580,9 +697,11 @@ def main():
             kb.delete_ids(stale)
             print(f"Deleted {len(stale)} stale KB docs.")
 
+    # Summary
+    dest = getattr(kb, "url", None) or getattr(kb, "persist_dir", backend_label)
     print(
-        f"Indexed {len(ids)} KB docs across {len(tables)} datasets "
-        f"into collection '{kb.collection_name}' at '{kb.persist_dir}'."
+        f"Done. Indexed {len(ids)} KB docs across {len(tables)} datasets "
+        f"into collection '{kb.collection_name}' ({backend_label} → {dest})."
     )
 
 

@@ -1,0 +1,33 @@
+[
+  {
+    "p_id": "P100_M",
+    "dataset": "GRUMP",
+    "ref": "10.1038s41597_025_05423_9_1494.pdf",
+    "prompt": "What was the minimum sequencing depth threshold used to filter GRUMP samples?"
+  },
+  {
+    "p_id": "P101_M",
+    "dataset": "GRUMP",
+    "ref": "10.1038s41597_025_05423_9_1494.pdf",
+    "prompt": "What were the exact nucleotide sequences of the primers used in GRUMP?"
+  },
+  {
+    "p_id": "P102_M",
+    "dataset": "GRUMP",
+    "ref": "10.5281zenodo.15586714_1510_description.txt",
+    "prompt": "What sequencing platform was used for FRAM Strait samples in GRUMP, and how did it differ from other cruises?"
+  },
+  {
+    "p_id": "P103_M",
+    "dataset": "GRUMP",
+    "ref": "10.5281zenodo.15586714_1510_description.txt",
+    "prompt": "What sequencing platform version was used for the MOSAiC samples?"
+  },
+  {
+    "p_id": "P104_M",
+    "dataset": "GRUMP",
+    "ref": "10.1038s41597_025_05423_9_1494.pdf",
+    "prompt": "What was the PRJNA accession for the BioGEOTRACES GA02 samples?"
+  }
+]
+

@@ -1,0 +1,252 @@
+{
+  "_comment": [
+    "Catalog-search evaluation queries.  Shape-oriented, not prompt-oriented.",
+    "",
+    "Each entry names a query shape (e.g. satellite_variable_with_region) and",
+    "provides expected_any + must_not_top lists.  The harness scores whether",
+    "any expected table lands in the top-N result set and whether any",
+    "must_not_top table lands at rank 1.",
+    "",
+    "IMPORTANT: expected_any should list ALL tables in the CMAP catalog that",
+    "legitimately answer the query.  must_not_top should list tables that",
+    "would be clearly wrong at rank 1 — typically datasets that do not",
+    "contain the requested variable at all, or that are in the wrong",
+    "modality (model vs satellite vs in-situ).  The domain expert (user)",
+    "should edit these lists; Claude seeded them from visible failures",
+    "and known CMAP metadata patterns, and they will need review.",
+    "",
+    "Shapes covered:",
+    "  - satellite_variable_with_region: 'satellite X over the Y'",
+    "  - surface_variable_with_region:   'surface X in the Y'",
+    "  - climatology_variable:           'climatology of X'",
+    "  - sensor_specific_variable:       'MODIS X' / 'MiSeq sequencing'",
+    "  - bare_variable:                  'X' alone (no qualifier)",
+    "",
+    "Rebuild: python scripts/eval_catalog_search.py"
+  ],
+  "queries": [
+    {
+      "id": "CS001",
+      "query": "satellite chlorophyll over the North Atlantic",
+      "expected_any": [
+        "tblCHL_REP",
+        "tblModis_CHL",
+        "tblModis_CHL_cl1",
+        "tblModis_CHL_NRT",
+        "tblCHL_GLOB_CMEMS_cl1"
+      ],
+      "must_not_top": [
+        "tblPisces_Forecast",
+        "tblPisces_Forecast_cl1",
+        "tblDarwin_Chl_Climatology"
+      ],
+      "shape": "satellite_variable_with_region",
+      "notes": "Satellite CHL has several direct candidates. Pisces is a model forecast, not satellite."
+    },
+    {
+      "id": "CS002",
+      "query": "satellite POC over the south pacific",
+      "expected_any": [
+        "tblModis_POC",
+        "tblModis_POC_cl1",
+        "tblModis_POC_NRT"
+      ],
+      "must_not_top": [
+        "tblDarwin_Nutrient_Climatology"
+      ],
+      "shape": "satellite_variable_with_region",
+      "notes": "MODIS POC is the satellite POC product. Darwin is a model climatology."
+    },
+    {
+      "id": "CS003",
+      "query": "satellite sea surface temperature",
+      "expected_any": [
+        "tblSST_AVHRR_OI_NRT",
+        "tblsst_AVHRR_OI_REP"
+      ],
+      "must_not_top": [
+        "tblERA5_monthly_averaged_single_level"
+      ],
+      "shape": "satellite_variable_bare",
+      "notes": "ERA5 is reanalysis, not satellite."
+    },
+    {
+      "id": "CS004",
+      "query": "surface dissolved nitrate over the south atlantic",
+      "expected_any": [
+        "tblDarwin_Nutrient",
+        "tblDarwin_Nutrient_Climatology",
+        "tblPisces_Forecast",
+        "tblPisces_Forecast_cl1",
+        "tblWOA_Climatology",
+        "tblWOA_2018_1deg_Climatology"
+      ],
+      "must_not_top": [
+        "tblSSS_NRT",
+        "tblSSS_NRT_cl1",
+        "tblSST_AVHRR_OI_NRT"
+      ],
+      "shape": "surface_variable_with_region",
+      "notes": "SSS/SST contain no nitrate variable. Model and climatology products do."
+    },
+    {
+      "id": "CS005",
+      "query": "climatology of chlorophyll",
+      "expected_any": [
+        "tblDarwin_Chl_Climatology",
+        "tblModis_CHL_cl1",
+        "tblCHL_REP"
+      ],
+      "must_not_top": [],
+      "shape": "climatology_variable",
+      "notes": "Prefer climatology products when user asks for climatology."
+    },
+    {
+      "id": "CS006",
+      "query": "MODIS chlorophyll",
+      "expected_any": [
+        "tblModis_CHL",
+        "tblModis_CHL_cl1",
+        "tblModis_CHL_NRT"
+      ],
+      "must_not_top": [
+        "tblCHL_REP",
+        "tblPisces_Forecast"
+      ],
+      "shape": "sensor_specific_variable",
+      "notes": "CHL_REP is CMEMS-processed, not specifically MODIS."
+    },
+    {
+      "id": "CS007",
+      "query": "chlorophyll",
+      "expected_any": [
+        "tblModis_CHL",
+        "tblModis_CHL_cl1",
+        "tblModis_CHL_NRT",
+        "tblCHL_REP",
+        "tblCHL_GLOB_CMEMS_cl1",
+        "tblDarwin_Chl_Climatology",
+        "tblPisces_Forecast",
+        "tblPisces_Forecast_cl1"
+      ],
+      "must_not_top": [],
+      "shape": "bare_variable",
+      "notes": "Bare variable — any chlorophyll dataset is a valid top-N hit."
+    },
+    {
+      "id": "CS008",
+      "query": "model nitrate climatology",
+      "expected_any": [
+        "tblDarwin_Nutrient_Climatology",
+        "tblPisces_Forecast_cl1"
+      ],
+      "must_not_top": [
+        "tblSSS_NRT",
+        "tblSST_AVHRR_OI_NRT",
+        "tblWOA_Climatology"
+      ],
+      "shape": "make_plus_variable_plus_mode",
+      "notes": "Model + climatology. WOA is observational climatology, not model — should not be top for 'model'."
+    },
+    {
+      "id": "CS009",
+      "query": "in-situ chlorophyll from cruises",
+      "expected_any": [
+        "tblHOT_EPR",
+        "tblHOT_Bottle_ALOHA",
+        "tblHOT_LAVA",
+        "tblBATS_Bottle",
+        "tblGlobal_PicoPhytoPlankton",
+        "tblSeaFlow"
+      ],
+      "must_not_top": [
+        "tblModis_CHL",
+        "tblModis_CHL_cl1",
+        "tblModis_CHL_NRT",
+        "tblDarwin_Chl_Climatology",
+        "tblPisces_Forecast"
+      ],
+      "shape": "insitu_variable",
+      "notes": "In-situ request should not top-rank satellite or model products."
+    },
+    {
+      "id": "CS010",
+      "query": "sea surface salinity",
+      "expected_any": [
+        "tblSSS_NRT",
+        "tblSSS_NRT_cl1"
+      ],
+      "must_not_top": [
+        "tblSST_AVHRR_OI_NRT"
+      ],
+      "shape": "bare_variable",
+      "notes": "SSS is salinity; SST is temperature — different variables despite tblSS- prefix overlap."
+    },
+    {
+      "id": "CS011",
+      "query": "altimetry sea level anomaly",
+      "expected_any": [
+        "tblAltimetry_REP_Signal",
+        "tblAltimetry_NRT_Signal",
+        "tblAltimetry_REP",
+        "tblAltimetry_NRT"
+      ],
+      "must_not_top": [],
+      "shape": "variable_with_method",
+      "notes": "Altimetry is the method; SLA is the variable."
+    },
+    {
+      "id": "CS012",
+      "query": "MODIS POC near real time",
+      "expected_any": [
+        "tblModis_POC_NRT"
+      ],
+      "must_not_top": [
+        "tblModis_CHL_NRT"
+      ],
+      "shape": "sensor_specific_variable_version",
+      "notes": "NRT qualifier should route to the NRT variant."
+    },
+    {
+      "id": "CS013",
+      "query": "World Ocean Atlas nitrate climatology",
+      "expected_any": [
+        "tblWOA_Climatology",
+        "tblWOA_2018_1deg_Climatology"
+      ],
+      "must_not_top": [
+        "tblDarwin_Nutrient_Climatology",
+        "tblPisces_Forecast_cl1"
+      ],
+      "shape": "named_product",
+      "notes": "User named WOA explicitly — should route there, not to model climatologies."
+    },
+    {
+      "id": "CS014",
+      "query": "particulate organic carbon",
+      "expected_any": [
+        "tblModis_POC",
+        "tblModis_POC_cl1",
+        "tblModis_POC_NRT"
+      ],
+      "must_not_top": [
+        "tblModis_CHL"
+      ],
+      "shape": "bare_variable",
+      "notes": "POC is a specific variable; CHL is different."
+    },
+    {
+      "id": "CS015",
+      "query": "ERA5 wind speed",
+      "expected_any": [
+        "tblERA5_monthly_averaged_single_level",
+        "tblERA5_hourly_single_level"
+      ],
+      "must_not_top": [
+        "tblSST_AVHRR_OI_NRT"
+      ],
+      "shape": "named_product_with_variable",
+      "notes": "ERA5 is a reanalysis product; wind is one of its variables."
+    }
+  ]
+}

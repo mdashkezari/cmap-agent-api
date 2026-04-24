@@ -1,0 +1,122 @@
+[
+  {
+    "p_id": "P001",
+    "answer": "Yes. The corrigendum says an updated version was released through the AODN portal after readers identified errors. The fixes included incorrect custodian metadata for several datasets, some species names and functional-group assignments, and updates to database contents including added records and new datasets."
+  },
+  {
+    "p_id": "P002",
+    "answer": "Yes. The study grew 11 sub/polar diatom strains and found that cold-water diatoms follow different allometric relationships between biovolume and cellular C, N, P, and Si than are typically used for temperate and tropical taxa. It concludes that separate scaling equations are needed for sub/polar diatoms."
+  },
+  {
+    "p_id": "P003",
+    "answer": "It couples a three-stream radiative-transfer model to a marine biogeochemical-ecosystem model inside a dynamic 3D ocean framework. It explicitly represents optically important constituents such as different phytoplankton functional types, detrital particles, and CDOM, and it is evaluated against both in situ and satellite products."
+  },
+  {
+    "p_id": "P004",
+    "answer": "The baseline ECCO v4 solution covers 1992-2011. The paper describes a publicly available inverse-modeling framework that includes global conformal grids, a global model setup, data constraints and control parameters, an interface to algorithmic differentiation, and a grid-independent Matlab toolbox, with automated regression tests."
+  },
+  {
+    "p_id": "P005",
+    "answer": "Because the paper argues that long-term broad-scale hydrographic observations from Argo can be used to improve estimates of regional turbulent transport rates in inverse models. Using a 20-year ECCO v4 state estimate constrained by Argo profiles, the authors report reduced model-data misfits and reduced long-term drift, including for independent biogeochemical tracers."
+  },
+  {
+    "p_id": "P006",
+    "answer": "It is described as an initial, preliminary CBIOMES-global model setup and documentation release. The description says it is based on ECCOv4r2 and a Darwin3 configuration that uses 51 plankton types."
+  },
+  {
+    "p_id": "P007",
+    "answer": "It reads like a very short model-configuration update rather than a full paper. The description simply identifies it as an update to MITgcm and DarwinProject elements and labels it as the `CBIOMES-global` model configuration."
+  },
+  {
+    "p_id": "P008",
+    "answer": "The paper explicitly includes different phytoplankton functional types, detrital particles, and colored dissolved organic matter (CDOM) as optically important constituents in the water column."
+  },
+  {
+    "p_id": "P009",
+    "answer": "Yes. This paper reports the first exploration of protist grazing in bathypelagic North Atlantic Deep Water (NADW). Using fluorescently labeled prey analogues, it found grazing in deep AAIW and NADW that removed about 3.79% ± 1.72% to 31.14% ± 8.24% of the standing prokaryote stock."
+  },
+  {
+    "p_id": "P010",
+    "answer": "It was much broader than a surface-only survey. The study measured hydrolysis rates of six high-molecular-weight polysaccharides and two low-molecular-weight substrate proxies across an Atlantic transect from 38°S to 10°N and at six depths ranging from the surface to bottom waters."
+  },
+  {
+    "p_id": "P011",
+    "answer": "HTVC010P was the pelagiphage genotype that was most abundant in surface waters. HTVC008M was detected mainly in the deep chlorophyll maximum and was less associated with surface samples."
+  },
+  {
+    "p_id": "P012",
+    "answer": "Reduced viral mortality produced the largest metabolite shifts. The paper reports significant responses in intracellular guanine, phenylalanine, glutamic acid, and ectoine, and notes that these metabolite changes were not accompanied by an increase in microbial abundance."
+  },
+  {
+    "p_id": "P013",
+    "answer": "GRUMP uses unfractionated (>0.2 µm) seawater amplified with universal 515Y/926R three-domain rRNA primers, so bacteria, archaea, and eukaryotes are quantified with one denominator and can be compared directly across samples. The dataset includes 1194 samples collected from 2003-2020 across all major ocean basins."
+  },
+  {
+    "p_id": "P014",
+    "answer": "In the ice-free West Spitsbergen Current, the study found a strong seasonal split: a productive summer dominated by diatoms and carbohydrate-degrading bacteria, and a regenerative winter dominated by heterotrophic Syndiniales, radiolarians, chemoautotrophic bacteria, and archaea. These patterns were resolved using autonomous sampling and sensor measurements across the annual cycle."
+  },
+  {
+    "p_id": "P015",
+    "answer": "It is a continent-scale, methodologically standardized time-series effort spanning seven Australian sites across about 30° of latitude and 38° of longitude. Samples were collected monthly to seasonally from multiple depths, and the paper reports 952 public bacteria/archaea samples and 388 public eukaryote samples at the time of publication."
+  },
+  {
+    "p_id": "P016",
+    "answer": "The collection combines two main sampling modes. One consists of GEOTRACES transects with multiple depths per station across the Atlantic and Pacific, and the other is a roughly monthly two-year time series from three depths at Station ALOHA and BATS, for a total of 610 metagenomic samples and more than 5 terabases of data."
+  },
+  {
+    "p_id": "P017",
+    "answer": "According to the editorial, AMT has run since 1995 and completed 30 research cruises. The transect spans more than 100° of latitude, samples to depths of up to 1000 m, and delivers repeat observations at roughly 160 km spacing over about 13,000 km."
+  },
+  {
+    "p_id": "P018",
+    "answer": "The methods varied by cruise. The description says the overall GRUMP compilation combines samples collected by multiple collaborations with different protocols; for example, AMT surface samples were filtered onto 0.22 µm Sterivex filters, while some GEOTRACES samples used 0.2 µm polycarbonate filters and sampled much deeper water."
+  },
+  {
+    "p_id": "P019",
+    "answer": "The study found that total viral transcription tended to rise at night overall, but the viral scaffolds with statistically significant diel periodicity—mostly cyanophages—peaked in the afternoon to early evening. The analysis was based on sampling every 4 hours for 8 days across 44 time points."
+  },
+  {
+    "p_id": "P020",
+    "answer": "It was very high frequency. The HaDS survey sampled surface microbial communities every 1.5 hours for 48 hours at both a coastal Kāneʻohe Bay station and a nearby offshore station, yielding 33 time points and generating 59 metatranscriptomes, 65 short-read metagenomes, 8 long-read metagenomes, and 66 tRNA transcript libraries, along with biogeochemical measurements."
+  },
+  {
+    "p_id": "P021",
+    "answer": "No. The paper found clear coastal-to-offshore structure in SAR11 communities: seven of eight detected SAR11 subclades showed distinct distributions across the transect. It also reports that just seven ASVs out of 106 accounted for about 77% of the total SAR11 community."
+  },
+  {
+    "p_id": "P022",
+    "answer": "The paper says a direct empirical relationship between surface POC and the blue-to-green remote-sensing reflectance ratio, Rrs(λB)/Rrs(555), performed reasonably well over large open-ocean regions. In their dataset, this approach achieved about 2% mean normalized bias and about 20% normalized RMSE over more than 50 data pairs."
+  },
+  {
+    "p_id": "P023",
+    "answer": "PISCES-v2 simulates the lower trophic levels of marine ecosystems and the biogeochemical cycles of carbon and major nutrients. The paper describes 24 prognostic tracers, including diatoms and nanophytoplankton, microzooplankton and mesozooplankton, plus carbonate chemistry, for use in both regional and global configurations and across seasonal to climate timescales."
+  },
+  {
+    "p_id": "P024",
+    "answer": "The atlas is built around materially coherent eddies identified with backward Lagrangian trajectories, so it is designed to track fluid masses that stay coherent and to support biogeochemical interpretation. The paper notes that although 65% of tracked SLA eddies are coherent at some point in their lifetime, only 54% contain a Lagrangian coherent structure at any given time."
+  },
+  {
+    "p_id": "P025",
+    "answer": "Version 1 only included contours for features that were already at least 32 days old. Version 2 extends the atlas to capture eddy genesis by back-advecting particle sets to ages of 24, 16, and 8 days."
+  },
+  {
+    "p_id": "P026",
+    "answer": "Users are expected to acknowledge SOCAT data providers and investigators appropriately and to cite the relevant SOCAT references. For SOCAT versions 3-2021, the statement says to cite Bakker et al. (2016) plus the dataset DOI, and for gridded products to also cite Sabine et al. (2013), while including the standard SOCAT acknowledgement text."
+  },
+  {
+    "p_id": "P027",
+    "answer": "The SeaFlow files provide continuous shipboard observations of the abundance and optical properties of small phytoplankton, along with derived estimates such as equivalent spherical diameter and cellular carbon. The published dataset includes over 69,000 files from 27 cruises, and the data are aggregated in 3-minute bins corresponding to roughly 1 km along track."
+  },
+  {
+    "p_id": "P028",
+    "answer": "Trichodesmium spp. stood out the most. It had the highest nifH gene-copy abundance and the highest transcript abundance overall, especially in surface waters of the Gulf of Guinea, at the equator, and in waters influenced by the Congo River plume."
+  },
+  {
+    "p_id": "P029",
+    "answer": "No. The paper reports that even though dissolved iron was low across the gyre, primary productivity was limited by iron at the border of the gyre but not in the center. The authors argue that the central gyre populations were acclimated to stable oligotrophic conditions, while nitrogen limitation remained evident there."
+  },
+  {
+    "p_id": "P030",
+    "answer": "The revised database corrected errors inherited from an earlier public compilation, separated UCYN-A sublineages, and distinguished among undetected points, detected-but-not-quantified points, and not-determined points. For the detected-but-not-quantified category, it used a nominal value of 1 nifH copy per liter, and all abundances were determined by qPCR."
+  }
+]

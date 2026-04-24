@@ -1,0 +1,26 @@
+[
+  {
+    "p_id": "P002_H",
+    "dataset": "CLASiC_Water_Column",
+    "ref": "10.3389fmars.2019.00286_1446.pdf",
+    "prompt": "If I use standard temperate diatom carbon-to-size relationships in polar waters, am I likely to be off?"
+  },
+  {
+    "p_id": "P029_H",
+    "dataset": "global_diazotroph_nifH",
+    "ref": "10.5194bg_5_215_2008_419.pdf",
+    "prompt": "Was primary productivity in the southeast Pacific gyre mainly iron-limited everywhere?"
+  },
+  {
+    "p_id": "P002_HC",
+    "dataset": "Australian_Phytoplankton_Database",
+    "ref": "10.1038sdata.2016.111_1467.pdf",
+    "prompt": "Which functional group was incorrectly assigned to Pedinellaceae in the Australian phytoplankton database, and what was it changed to?"
+  },
+  {
+    "p_id": "P069_HC",
+    "dataset": "global_diazotroph_nifH",
+    "ref": "10.5281zenodo.4968554_413_description.txt",
+    "prompt": "How does the global diazotroph nifH database distinguish between samples where the target was undetected, detected but not quantified, and not determined?"
+  }
+]

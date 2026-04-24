@@ -18,3 +18,12 @@ build/
 outputs/
 notrack/
 artifacts/
+
+# Local KB storage — large, host-mounted, irrelevant to the image.
+# Both backends' data directories are excluded from the build context.
+# Chroma is still a supported alternate backend (see README) — this
+# exclusion is about build-context size, not deprecation.
+qdrant_data/
+qdrant_storage/
+chroma/
+chroma_db/

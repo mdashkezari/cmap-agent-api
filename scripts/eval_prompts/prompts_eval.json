@@ -1,0 +1,182 @@
+[
+  {
+    "p_id": "P001",
+    "dataset": "Australian_Phytoplankton_Database",
+    "ref": "10.1038sdata.2016.111_1467.pdf",
+    "prompt": "I heard the Australian phytoplankton database was corrected after the original release. What was actually fixed, and was a newer version made available?"
+  },
+  {
+    "p_id": "P002",
+    "dataset": "CLASiC_Water_Column",
+    "ref": "10.3389fmars.2019.00286_1446.pdf",
+    "prompt": "If I use standard temperate diatom carbon-to-size relationships in polar waters, am I likely to be off?"
+  },
+  {
+    "p_id": "P003",
+    "dataset": "Darwin-MITgcm_Climatology",
+    "ref": "10.5194bg_12_4447_2015_11.pdf",
+    "prompt": "What does this Darwin-related model paper add beyond a regular ecosystem model?"
+  },
+  {
+    "p_id": "P004",
+    "dataset": "Darwin-MITgcm_Climatology",
+    "ref": "10.5194gmd_8_3071_2015_12.pdf",
+    "prompt": "What period does the ECCO v4 baseline solution cover, and what comes with that framework?"
+  },
+  {
+    "p_id": "P005",
+    "dataset": "Darwin-MITgcm_Climatology",
+    "ref": "10.5194os_11_839_2015_13.pdf",
+    "prompt": "Why does this reference care so much about Argo floats?"
+  },
+  {
+    "p_id": "P006",
+    "dataset": "Darwin-MITgcm_Climatology",
+    "ref": "10.5281zenodo.1343303_15_description.txt",
+    "prompt": "What kind of CBIOMES setup is this early release based on?"
+  },
+  {
+    "p_id": "P007",
+    "dataset": "Darwin-MITgcm_Climatology",
+    "ref": "10.5281zenodo.2653669_16_description.txt",
+    "prompt": "Is this reference a full paper or more of a model configuration update?"
+  },
+  {
+    "p_id": "P008",
+    "dataset": "Darwin_Nutrient",
+    "ref": "10.5194bg_12_4447_2015_68.pdf",
+    "prompt": "In the optical Darwin model paper, which water-column constituents are treated as important for light absorption and scattering?"
+  },
+  {
+    "p_id": "P009",
+    "dataset": "DeepDOM_nutrients",
+    "ref": "10.1371journal.pone.0124505_1551.pdf",
+    "prompt": "Is there evidence that protists are still grazing meaningfully way down in the deep Atlantic?"
+  },
+  {
+    "p_id": "P010",
+    "dataset": "DeepDOM_nutrients",
+    "ref": "10.3389fmars.2017.00200_1544.pdf",
+    "prompt": "How broad was the enzyme survey on that Atlantic transect—was it just surface water?"
+  },
+  {
+    "p_id": "P011",
+    "dataset": "DeepDOM_nutrients",
+    "ref": "10.3389fmicb.2016.01534_1543.pdf",
+    "prompt": "Between the two Pelagibacter phage types in this Atlantic transect study, which one showed up strongest near the surface?"
+  },
+  {
+    "p_id": "P012",
+    "dataset": "DeepDOM_nutrients",
+    "ref": "10.3390metabo10030105_1550.pdf",
+    "prompt": "When they manipulated mortality in that microbial metabolomics experiment, which pressure changed the metabolome most?"
+  },
+  {
+    "p_id": "P013",
+    "dataset": "GRUMP",
+    "ref": "10.1038s41597_025_05423_9_1494.pdf",
+    "prompt": "What makes GRUMP different from a lot of older global amplicon compilations?"
+  },
+  {
+    "p_id": "P014",
+    "dataset": "GRUMP",
+    "ref": "10.1038s43705_021_00074_4_1508.pdf",
+    "prompt": "What seasonal pattern did the Fram Strait microbiome paper see in the ice-free current?"
+  },
+  {
+    "p_id": "P015",
+    "dataset": "GRUMP",
+    "ref": "10.1038sdata.2018.130_1500.pdf",
+    "prompt": "How extensive is the Australian time-series microbiome program in that reference?"
+  },
+  {
+    "p_id": "P016",
+    "dataset": "GRUMP",
+    "ref": "10.1038sdata.2018.176_1497.pdf",
+    "prompt": "What are the two big sampling modes in that metagenome collection?"
+  },
+  {
+    "p_id": "P017",
+    "dataset": "GRUMP",
+    "ref": "10.3389fmars.2024.1358174_1506.pdf",
+    "prompt": "How big is the Atlantic Meridional Transect effort in space and time?"
+  },
+  {
+    "p_id": "P018",
+    "dataset": "GRUMP",
+    "ref": "10.5281zenodo.15586714_1510_description.txt",
+    "prompt": "Were all the GRUMP samples collected the same way, or did the methods vary by cruise?"
+  },
+  {
+    "p_id": "P019",
+    "dataset": "HL2A_diel_metagenomics",
+    "ref": "10.1073pnas.1714821114_745.pdf",
+    "prompt": "On the Hawaii diel metagenomics side, when do the strongly periodic viral transcripts tend to peak?"
+  },
+  {
+    "p_id": "P020",
+    "dataset": "HaDS_Diel_Multi_Omics",
+    "ref": "10.5281zenodo.15643373_1515_description.txt",
+    "prompt": "How intense was the Hawaii diel multi-omics sampling, in practical terms?"
+  },
+  {
+    "p_id": "P021",
+    "dataset": "HaDS_Diel_Multi_Omics",
+    "ref": "10.7717peerj.12274_1512.pdf",
+    "prompt": "Did the SAR11 communities look the same in Kāneʻohe Bay and offshore?"
+  },
+  {
+    "p_id": "P022",
+    "dataset": "MODIS_POC_cl1",
+    "ref": "10.5194bg_5_171_2008_689.pdf",
+    "prompt": "What optical approach worked reasonably well for estimating surface particulate organic carbon in this study?"
+  },
+  {
+    "p_id": "P023",
+    "dataset": "Mercator_Pisces_Biogeochem_Climatology",
+    "ref": "10.5194gmd_8_2465_2015_8.pdf",
+    "prompt": "At a high level, what does PISCES-v2 actually simulate?"
+  },
+  {
+    "p_id": "P024",
+    "dataset": "RCLV_atlas_version2",
+    "ref": "10.5194essd_16_1475_2024_1276.pdf",
+    "prompt": "What’s the practical advantage of this eddy atlas over a standard sea-level-anomaly eddy list?"
+  },
+  {
+    "p_id": "P025",
+    "dataset": "RCLV_atlas_version2",
+    "ref": "10.5281zenodo.10849221_1277_description.txt",
+    "prompt": "What changed between version 1 and version 2 of the RCLV atlas?"
+  },
+  {
+    "p_id": "P026",
+    "dataset": "SOCATv2022",
+    "ref": "httpswww.socat.infowp_contentuploads202206SOCATv2022_Data_Us_649.pdf",
+    "prompt": "If someone publishes with SOCAT, what are they expected to cite or acknowledge?"
+  },
+  {
+    "p_id": "P027",
+    "dataset": "all_SeaFlow_cruises_v1_5",
+    "ref": "10.1038s41597_019_0292_2_567.html",
+    "prompt": "What exactly do the SeaFlow cruise files give me, and at what spatial scale?"
+  },
+  {
+    "p_id": "P028",
+    "dataset": "global_diazotroph_nifH",
+    "ref": "10.1111j.1462_2920.2008.01796.x_408.pdf",
+    "prompt": "Which diazotroph stood out most in the eastern equatorial Atlantic study, and where?"
+  },
+  {
+    "p_id": "P029",
+    "dataset": "global_diazotroph_nifH",
+    "ref": "10.5194bg_5_215_2008_419.pdf",
+    "prompt": "Was primary productivity in the southeast Pacific gyre mainly iron-limited everywhere?"
+  },
+  {
+    "p_id": "P030",
+    "dataset": "global_diazotroph_nifH",
+    "ref": "10.5281zenodo.4968554_413_description.txt",
+    "prompt": "What did the revised nifH qPCR database clean up compared with earlier compilations?"
+  }
+]

@@ -1,0 +1,278 @@
+[
+  {
+    "p_id": "P001_C",
+    "answer": "Several corrections were made: species names (Tripos brevis and Tripos arietinus were misspelled), functional group reassignment for Pedinellaceae, renaming 'Naked flagellate' to 'Flagellate', removal of the 'Other' group, and removal of macroalgae entries. Three datasets were also extended with more recent data. After updates, presence/abundance records decreased slightly from 224,262 to 222,617, while the total record count including absence records decreased from 3,724,221 to 3,621,847."
+  },
+  {
+    "p_id": "P002_C",
+    "answer": "Pedinellaceae was incorrectly assigned to 'dinoflagellate' as a functional group. It was reassigned to 'flagellate' in the corrected version of the database."
+  },
+  {
+    "p_id": "P003_C",
+    "answer": "The Australian Antarctic Division was corrected as the custodian for datasets P744, P746, P748, and P778. Dataset P752 was corrected to have the Royal Belgian Institute of Natural Sciences as its custodian."
+  },
+  {
+    "p_id": "P004_C",
+    "answer": "Cold-water polar diatoms (grown at 2\u00b0C) had significantly higher elemental density\u2014intercepts of elemental quotas (C, N, P, Si) were approximately 5-fold to 100-fold greater than published values for temperate diatoms, depending on the element and growth phase. While the allometric slopes were somewhat similar to temperate values (after excluding the outlier Odontella aurita), the absolute elemental concentrations per unit biovolume were much higher for polar-grown diatoms."
+  },
+  {
+    "p_id": "P005_C",
+    "answer": "Odontella aurita was consistently identified as an outlier in the allometric relationships. When O. aurita was included, regression slopes for C, N, P, and Si were lower than published temperate diatom values. Excluding O. aurita resulted in regression slopes that were more similar to values in the broader literature, making it important to report both analyses to correctly characterize polar diatom allometry."
+  },
+  {
+    "p_id": "P006_C",
+    "answer": "Eleven strains of diatoms isolated from sub-polar and polar waters (both Arctic and Antarctic) were grown in batch mode at 2\u00b0C. Cellular carbon, nitrogen, phosphorus, silica, cell number, and biovolume were measured during mid-exponential and early stationary growth phases."
+  },
+  {
+    "p_id": "P007_C",
+    "answer": "In contrast to the widely accepted negative relationship between maximum specific growth rate and cell size, the study found a positive correlation between relative growth rate and biovolume for cold-water diatoms\u2014larger diatoms consistently achieved growth rates closer to their theoretical maximum than smaller diatoms. Proposed reasons include that large vacuous centric diatoms may have a lower Q10 for growth or can allocate more resources to progeny to sustain high division rates."
+  },
+  {
+    "p_id": "P008_C",
+    "answer": "Dutkiewicz et al. 2015 presented a three-dimensional ocean model coupling a three-stream radiative transfer component with a marine biogeochemical-ecosystem component. The optically important constituents explicitly included were different phytoplankton functional types, detrital particles, and colored dissolved organic matter (CDOM). The model was evaluated against both in situ and satellite-derived data, including measurements along a meridional transect of the Atlantic Ocean."
+  },
+  {
+    "p_id": "P009_C",
+    "answer": "CDOM has proportionally greater importance in attenuating light at short wavelengths (blue) and in more productive waters. Phytoplankton absorption is relatively more important near the subsurface chlorophyll maximum. Water molecules contribute most to attenuation when concentrations of other constituents are low, as in oligotrophic subtropical gyres. Scattering had less overall effect on attenuation compared to absorption processes."
+  },
+  {
+    "p_id": "P010_C",
+    "answer": "ECCO v4 (Estimating the Circulation and Climate of the Ocean, version 4) is a non-linear inverse modeling framework for global ocean state estimation. Its baseline solution covers the evolving ocean state from 1992 to 2011. The framework produces a dynamically consistent ocean state estimate and is publicly available with automated regression tests."
+  },
+  {
+    "p_id": "P011_C",
+    "answer": "According to ECCO v4, parametric and external model uncertainties were found to be of comparable importance and together dominated over structural model uncertainty. The inverse estimation of parameterized physics (turbulent transport parameters) was instrumental in improving model fit to observed hydrography, indicating that adjustable parameters are more important sources of model error than structural choices."
+  },
+  {
+    "p_id": "P012_C",
+    "answer": "The ECCO v4 turbulent transport parameter adjustments dramatically reduced misfits to in situ profiles compared to earlier ECCO solutions. They also yielded a clear reduction in model drift away from observations over multi-century-long simulations for both assimilated variables (temperature and salinity) and independent variables (biogeochemical tracers), demonstrating that better-constrained turbulent mixing parameters improve long-term model skill."
+  },
+  {
+    "p_id": "P013_C",
+    "answer": "The Argo float array was used as the main observational constraint for estimating regional turbulent transport rates. Argo provides broad-scale hydrographic profiles from the sea surface to 2000 m depth, and a 20-year ocean state estimate produced under the constraints of fitting extensive Argo profiles collected through 2011 provided supporting evidence for improved turbulent transport parameter estimation."
+  },
+  {
+    "p_id": "P014_C",
+    "answer": "The CBIOMES-global model is a global ocean biogeochemical and ecosystem model configuration. The initial version (stored on Zenodo) is based on ECCOv4r2 for the ocean circulation component and the Darwin3 plankton model, which includes 51 plankton types. It was developed as part of the CBIOMES (Computationally Intensive Biogeochemistry and Ocean-Microbiome Ecological Simulations) project."
+  },
+  {
+    "p_id": "P015_C",
+    "answer": "Incorporating the different optically important constituents explicitly\u2014particularly spectrally resolved irradiance\u2014was shown to be crucial for capturing the variability in the depth of the subsurface chlorophyll a maximum. Models without these explicit optical components could not reproduce the observed patterns in deep chlorophyll maximum depth across different ocean regimes."
+  },
+  {
+    "p_id": "P016_C",
+    "answer": "Water molecules show the greatest relative contribution to light attenuation in the oligotrophic subtropical gyres, where concentrations of phytoplankton, CDOM, and detrital particles are all very low. In these clear, low-biomass regions, pure water absorption dominates the optical budget."
+  },
+  {
+    "p_id": "P017_C",
+    "answer": "Hoarfrost and Arnosti found that in surface to upper mesopelagic waters, hydrolytic assemblages were more similar vertically within a single station than at similar depths across multiple stations, indicating site-specific patterns. The spectrum of substrates hydrolyzed and the proportion of total hydrolysis occurring above the pycnocline were positively related to the strength of stratification. Temperature and chlorophyll a together accounted for most of the predictive power (R\u00b2=0.19), while including additional environmental variables only marginally improved the model."
+  },
+  {
+    "p_id": "P018_C",
+    "answer": "The proportion of total hydrolysis occurring above the permanent thermocline and the spectrum of substrates hydrolyzed in mesopelagic and deep waters were both positively related to the strength of water column stratification at each site. Sites with stronger stratification showed a higher fraction of hydrolysis occurring in shallow waters, while stratification more than other physico-chemical parameters predicted the measured hydrolysis patterns."
+  },
+  {
+    "p_id": "P019_C",
+    "answer": "Viral abundance decreased strongly with depth: on average 1.64 \u00d7 10\u2077 virus-like particles per mL in surface waters, declining to 6.50 \u00d7 10\u2075 VLPs in Antarctic Bottom Water. Log bacterial abundance (LBA) was the strongest single predictor, explaining 87.54% of the variability in log viral abundance (R\u00b2=0.8754). Including water mass, temperature, and salinity further improved the model to R\u00b2=0.9178."
+  },
+  {
+    "p_id": "P020_C",
+    "answer": "The two pelagiphages studied were HTVC010P (a podoviridae subfamily member) and HTVC008M (a T4-like myovirus). HTVC010P was most abundant in surface waters with copy numbers averaging 1.03 \u00d7 10\u2075 per mL. HTVC008M was present mainly in the deep chlorophyll maximum (averaging 5.42 \u00d7 10\u00b3 copies/mL) and was less abundant in surface waters than HTVC010P."
+  },
+  {
+    "p_id": "P021_C",
+    "answer": "HTVC008M was only present at a few of the most southern stations in the Atlantic transect, suggesting a latitudinal biogeography for this SAR11 phage type. This was in contrast to HTVC010P, which showed a more widespread distribution. This pattern implies that SAR11 phage biogeography may be structured latitudinally, potentially reflecting the distribution of specific SAR11 host strains."
+  },
+  {
+    "p_id": "P022_C",
+    "answer": "The Rocke et al. PLoS ONE study focused on protist communities in deep ocean water masses and investigated grazing on prokaryotic prey\u2014specifically protist community grazing on bacteria in the deep ocean, shedding light on the role of heterotrophic protists as consumers driving microbial food web dynamics in the deep sea."
+  },
+  {
+    "p_id": "P023_C",
+    "answer": "The metabolomics paper (Metabolites 2020) investigated intracellular metabolites in marine microorganisms during a nutrient enrichment experiment, examining how marine microbial metabolism responds to changes in nutrient conditions\u2014relevant to understanding dissolved organic matter cycling and microbial physiology in ocean systems."
+  },
+  {
+    "p_id": "P024_C",
+    "answer": "GRUMP is unique because prior global studies used size fractionation and different rRNA gene primers for bacteria/archaea (16S) and eukaryotes (18S), making cross-domain abundance comparisons impossible. GRUMP uses a single universal primer pair (515Y/926R) on unfractionated seawater, so the ratio of any organism or group to any other is directly comparable across all samples and domains regardless of gene copy number differences."
+  },
+  {
+    "p_id": "P025_C",
+    "answer": "The 515Y/926R universal three-domain rRNA gene primers were used, which simultaneously amplify 16S (bacteria, archaea) and 18S (eukaryotes). On average across all samples, bacteria contributed 71%, eukaryotes 19%, and archaea 8% to rRNA gene abundance in the GRUMP dataset."
+  },
+  {
+    "p_id": "P026_C",
+    "answer": "At latitudes greater than 40\u00b0, eukaryotes contributed 32% to rRNA gene abundance\u2014nearly double the global average of 19%. This indicates that eukaryotic plankton become relatively more abundant at higher latitudes compared to the global mean pattern dominated by bacteria and archaea."
+  },
+  {
+    "p_id": "P027_C",
+    "answer": "GRUMP includes samples from major ocean programs including Atlantic Meridional Transects (AMT 19 and 20), GEOTRACES transects (GA02, GA03, GA10, GP13), SCOPE-Gradients cruises (2017 and 2019), FRAM Strait mooring samples, MOSAiC expedition, several Southern Ocean transects (K-AXIS, HEOBI, GO-SHIP P15S, IND-2017), GO-SHIP transects (I08S, I09N, P16 S/N), and the POTATOE cruise. Samples were collected from 2003 to 2020."
+  },
+  {
+    "p_id": "P028_C",
+    "answer": "For the 515Y/926R primers, forward and reverse 18S reads do not overlap (unlike 16S reads which fully overlap). Standard amplicon pipelines require overlapping reads for merging, which would discard all 18S sequences. The GRUMP pipeline addresses this by using a universal trim length of 220 bp for forward and 180 bp for reverse 18S reads, then concatenating forward and reverse 18S reads to create directly comparable ASVs without requiring overlap."
+  },
+  {
+    "p_id": "P029_C",
+    "answer": "Bioanalyzer traces were taken for each sample before sequencing to measure the 16S and 18S fractions in the PCR product. These bioanalyzer-based fractions were then compared to the actual sequenced fractions from bbsplit (which separates 16S and 18S reads). Correction factors were calculated as the ratio of bioanalyzer fraction to sequenced fraction for each type, and the entire dataset was multiplied by these correction factors. For FRAM Strait and MOSAiC samples lacking bioanalyzer traces, correction factors from Southern Ocean samples were applied."
+  },
+  {
+    "p_id": "P030_C",
+    "answer": "The Biller et al. 2018 Scientific Data paper described the Tara Oceans metagenomes sampled across space and time\u2014a global ocean survey collecting metagenomic data from surface ocean water across multiple ocean basins, providing a broad baseline for marine microbial genomic diversity. It covered diverse marine environments and contributed reference data relevant to microbial ocean ecology."
+  },
+  {
+    "p_id": "P031_C",
+    "answer": "The Australian Microbiome Initiative (described in the 2018 Scientific Data paper) conducted systematic continental-scale temporal monitoring of marine pelagic microbiota. It employed the Australian Continuous Plankton Recorder and National Reference Stations to provide time-series data on marine microbial communities across Australian waters, capturing seasonal and interannual variation."
+  },
+  {
+    "p_id": "P032_C",
+    "answer": "The FRAM Strait polar night study found that the Arctic Ocean microbiome undergoes a distinct 'polar night shift'\u2014seasonal dynamics in microbial community composition that are driven by light availability rather than being dormant during winter darkness. Different microbial groups show characteristic seasonal patterns, with some taxa peaking during polar night conditions, revealing that the dark polar winter is an ecologically active period with distinct community dynamics."
+  },
+  {
+    "p_id": "P033_C",
+    "answer": "The Atlantic Meridional Transect (AMT) programme conducts repeated oceanographic surveys along a transect from the UK to the South Atlantic, covering approximately 13,500 km across multiple ocean provinces. The editorial noted it has been running from 1995 to at least 2023\u2014nearly three decades of continuous sampling\u2014making it one of the longest-running ocean time-series programs for characterizing Atlantic plankton ecology and biogeochemistry."
+  },
+  {
+    "p_id": "P034_C",
+    "answer": "The study found that the dominant dsDNA viral assemblage in the ocean euphotic zone was remarkably stable, with the most abundant viral types persisting over many days. Extended time-series analysis indicated that long-term persistence (greater than one year) was the rule for most dsDNA viruses observed, suggesting that both core viral genomes and community structure were conserved over interannual timescales at Station ALOHA."
+  },
+  {
+    "p_id": "P035_C",
+    "answer": "An afternoon peak in cyanophage transcriptional activity coincided with a peak in Prochlorococcus DNA replication and cell division gene transcription. This indicated a tightly synchronized diel coupling of cyanophage and Prochlorococcus replication cycles\u2014the viruses appeared to time their intracellular reproduction to coincide with host DNA replication, which is itself driven by the light-dark cycle."
+  },
+  {
+    "p_id": "P036_C",
+    "answer": "Of 170 viral scaffolds showing transcriptional activity throughout the sampling period, 26 (15.3%) exhibited diel periodicity in their aggregate transcriptional profiles. Since mRNA from dsDNA viruses should only be detected during the viral replication cycle, these diel patterns indicate that intracellular viral reproduction itself follows diel timing, not just the transcription of specific genes. This suggests that diel cycles are universal organizing principles for both cellular and viral community components in the ocean."
+  },
+  {
+    "p_id": "P037_C",
+    "answer": "The HaDS survey sampled surface ocean microbial communities every 1.5 hours for 48 continuous hours at two environments: K\u0101ne\u02bbohe Bay (coastal station HP1) on the windward coast of O\u02bbahu, Hawai\u02bbi, and the adjacent offshore station (STO1). At both stations, 33 time-points were sampled across 48 hours in August 2021. This high-frequency design was intended to capture diel rhythms in microbial community dynamics."
+  },
+  {
+    "p_id": "P038_C",
+    "answer": "The HaDS study generated 59 metatranscriptomes, 65 short-read metagenomes, 8 long-read metagenomes, and 66 transfer RNA transcript libraries, in addition to ocean biogeochemical measurements. Four deeply-sequenced short-read metagenomes from prior sampling campaigns were also included. The overarching scientific goal was to characterize microbial responses to diel changes in ocean biogeochemistry and to investigate mechanisms of transcriptional and translational regulation."
+  },
+  {
+    "p_id": "P039_C",
+    "answer": "Seven of the eight detected SAR11 subclades showed distinct distributions across the coastal-to-offshore gradient. The offshore environment contained higher SAR11 ASV diversity than the nearshore, especially within subclade IIa. Most SAR11 ASVs (64 of 106) were spatially restricted to either coastal or offshore environments, with only 39 ASVs shared across the full coastal-transition-offshore gradient."
+  },
+  {
+    "p_id": "P040_C",
+    "answer": "Strong positive correlations (Spearman rs > 0.7) were found between Prochlorococcus sequence abundance and SAR11 subclade Ib and ASV34 (subclade Ib) and ASV18 (subclade Ia). Moderate positive correlations (rs = 0.4\u20130.7) were found for other offshore-associated subclades (IIa, IV, Vb) and ASVs (4, 78). This suggests that these SAR11 subclades and Prochlorococcus share similar environmental preferences in the offshore oligotrophic environment."
+  },
+  {
+    "p_id": "P041_C",
+    "answer": "Seven dominant SAR11 ASVs made up an average of 77% of all SAR11 sequences across all samples. These seven ASVs (ASV47, ASV16, ASV78, ASV18, ASV34, ASV96, and ASV4) spanned five different SAR11 subclades: Ia, Ib, IIa, IV, and Va. Within the coastal environment these seven ASVs made up 83% of total SAR11, decreasing slightly to about 63% in the offshore environment where diversity was higher."
+  },
+  {
+    "p_id": "P042_C",
+    "answer": "Surface POC ranged from about 10 mg m\u207b\u00b3 in the extremely oligotrophic South Pacific Subtropical Gyre to 270 mg m\u207b\u00b3 in the Chilean coastal upwelling area. The minimum values were driven by low nutrient conditions in the central subtropical gyre, while maximum values were associated with nutrient-rich upwelling conditions along the Chilean coast. This approximately 27-fold range reflected considerable variation in particulate assemblage characteristics across the ocean provinces sampled."
+  },
+  {
+    "p_id": "P043_C",
+    "answer": "Stramski et al. 2008 found that a direct empirical relationship between POC and the blue-to-green band ratio of remote-sensing reflectance (Rrs(\u03bbB)/Rrs(555)) promised reasonably good performance across vast areas of the open ocean from hyperoligotrophic to moderately productive waters. They also evaluated two-step algorithms combining reflectance with inherent optical properties (beam attenuation or backscattering), finding these to be promising complements especially when anchored to in situ optical measurements."
+  },
+  {
+    "p_id": "P044_C",
+    "answer": "The relationship between particulate beam attenuation at 660 nm and the blue-to-green reflectance ratio was described as fairly robust across different ocean provinces from hyperoligotrophic subtropical gyres to upwelling areas. Despite the fact that cp(660) is driven primarily by particle scattering in the red and Rrs(\u03bbB)/Rrs(555) is driven by particle and CDOM absorption in the blue, a high degree of covariation between these processes within the dataset explained this robustness. Previous analyses in the north polar Atlantic also showed little sensitivity to regional and seasonal bio-optical variability."
+  },
+  {
+    "p_id": "P045_C",
+    "answer": "PISCES-v2 includes two phytoplankton compartments: nanophytoplankton and diatoms. The two zooplankton size classes are microzooplankton and mesozooplankton. In total the model has 24 prognostic tracers (variables), and also includes a description of carbonate chemistry."
+  },
+  {
+    "p_id": "P046_C",
+    "answer": "In PISCES-v2, the stoichiometry of carbon, nitrogen, and phosphorus is fixed (constant C:N:P ratio), and phytoplankton growth rate is limited by the external availability of N, P, and Si. In contrast, iron and silicon quotas are variable (dynamic), and phytoplankton growth rate is limited by the internal (intracellular) availability of iron. This mixed Monod-quota formalism allows iron-limited conditions to be represented with a flexible internal quota while simplifying macronutrient dynamics."
+  },
+  {
+    "p_id": "P047_C",
+    "answer": "Modeled denitrification in the water column was about 78 Tg N yr\u207b\u00b9 and in the sediments about 93 Tg N yr\u207b\u00b9. Observational estimates of sediment denitrification (130\u2013300 Tg N yr\u207b\u00b9) were significantly higher than modeled values. The authors explained this discrepancy by the coarse spatial resolution of the model, which inadequately represents continental margins where most benthic denitrification occurs. The overall nitrogen budget showed sources exceeding sinks by about 21 Tg N yr\u207b\u00b9."
+  },
+  {
+    "p_id": "P048_C",
+    "answer": "PISCES-v2 successfully reproduced moderate chlorophyll concentrations in two of the three main HNLC (high nutrient, low chlorophyll) regions: the equatorial Pacific and the eastern subarctic Pacific. It had difficulty in the equatorial Atlantic (strong underestimation) and the Arabian Sea (where mesoscale processes are critical), and overestimated chlorophyll east of Japan in spring due to poorly represented ocean circulation near the Kuroshio current."
+  },
+  {
+    "p_id": "P049_C",
+    "answer": "A Rotationally Coherent Lagrangian Vortex (RCLV) is a mesoscale eddy identified using backward Lagrangian particle trajectories\u2014it traps and transports a coherent fluid mass over time without significant lateral exchange with surrounding waters. This contrasts with Sea Level Anomaly (SLA) eddies, which are identified from satellite altimetry and can include features that do not actually trap fluid but instead mix more freely with surrounding waters. RCLVs represent truly coherent structures, while many SLA eddies are 'dispersive' and not materially isolated."
+  },
+  {
+    "p_id": "P050_C",
+    "answer": "In the North Pacific Subtropical Gyre region around Hawai\u02bbi, 65% of tracked Sea Level Anomaly eddies were classified as coherent at some point during their lifetimes. However, only 54% contained a Lagrangian coherent structure at any given time snapshot, meaning that being classified as an SLA eddy does not guarantee coherency throughout the eddy's lifetime."
+  },
+  {
+    "p_id": "P051_C",
+    "answer": "The RCLV atlas was specifically designed to facilitate biogeochemical applications by synchronizing with available ocean color products (satellite chlorophyll-a data). This allows researchers to directly link eddy coherency with phytoplankton biomass observations. The atlas was also designed with an 8-day resolution to match ocean color compositing periods, and used backward Lagrangian trajectories so the recent history of coherency (most relevant for interpreting associated biogeochemical signatures) is captured."
+  },
+  {
+    "p_id": "P052_C",
+    "answer": "The RCLV atlas has 8-day temporal resolution. Eddy age is calculated by tracking fluid masses through time to assign IDs and track vortex ages. In version 1 of the atlas, eddies were required to be coherent for at least 32 days\u2014the atlas only included contours representing features aged 32 days or older, which was determined using 32-day backward-in-time Lagrangian trajectories."
+  },
+  {
+    "p_id": "P053_C",
+    "answer": "Version 2 extends the dataset to include eddy genesis by advecting particle sets backward-in-time to younger eddy ages of 24, 16, and 8 days. This means version 2 captures the early development of eddies that eventually become coherent, whereas version 1 only included eddies once they had reached 32 days of age, missing the formative stages."
+  },
+  {
+    "p_id": "P054_C",
+    "answer": "SOCAT expects users to generously acknowledge the contribution of data providers and investigators, which may include inviting large regional data providers to collaborate at an early stage\u2014potentially as co-authors if they make significant scientific contributions. Users should also reference SOCAT and its data products using the appropriate citations, include the standard SOCAT acknowledgement text in their publications, report problems to the SOCAT team, and inform the SOCAT team of publications in which the data are used."
+  },
+  {
+    "p_id": "P055_C",
+    "answer": "SOCAT is endorsed by three international programs: the International Ocean Carbon Coordination Project (IOCCP), the Surface Ocean Lower Atmosphere Study (SOLAS), and the Integrated Marine Biosphere Research (IMBeR) program. The purpose of SOCAT is to deliver a uniformly quality-controlled surface ocean CO\u2082 database (specifically fCO\u2082 measurements), making it an internationally coordinated resource for ocean carbon cycle research."
+  },
+  {
+    "p_id": "P056_C",
+    "answer": "For SOCAT versions 3 through 2021, users must cite Bakker et al. (2016) (the multi-decade record paper published in Earth System Science Data) as well as the relevant dataset with its DOI number. For gridded products, users must additionally cite Sabine et al. (2013) on top of the Bakker et al. reference."
+  },
+  {
+    "p_id": "P057_C",
+    "answer": "SeaFlow is a custom-built underway flow cytometer developed for high-resolution continuous observations of small phytoplankton (less than 5 \u00b5m) in surface ocean waters. Unlike conventional flow cytometers that require a sheath fluid, SeaFlow uses a unique optical system with three photodetectors including two position-sensitive detectors. This creates a 'virtual core' within the sample stream, eliminating the need for sheath fluid and allowing the instrument to continuously sample seawater from a ship's flow-through system while underway."
+  },
+  {
+    "p_id": "P058_C",
+    "answer": "The SeaFlow v1 dataset covered 27 oceanographic cruises across 32,500 km of the Northeast Pacific Ocean, with data collected between 2010 and 2018 (an 8-year period). Thirteen of those cruises provided high spatial resolution (~1 km) measurements across the transect region, while 14 near-monthly cruises beginning in 2015 provided seasonal distributions at Station ALOHA in the North Pacific Subtropical Gyre."
+  },
+  {
+    "p_id": "P059_C",
+    "answer": "SeaFlow measured several phytoplankton populations including the cyanobacteria Prochlorococcus, Synechococcus, and small-sized Crocosphaera (less than 5 \u00b5m ESD), as well as picophytoplankton and nanophytoplankton (2\u20135 \u00b5m ESD). The dataset includes cell abundance, optical properties (forward light scatter, red and orange fluorescence), and derived equivalent spherical diameter and carbon quotas. The size cutoff is 5 \u00b5m in equivalent spherical diameter."
+  },
+  {
+    "p_id": "P060_C",
+    "answer": "ESD was estimated by applying Mie light scattering theory to SeaFlow-based forward scatter measurements using a simplified optical model optimized against calibration beads and cultured organisms of known size. Three refractive indices (1.35, 1.38, and 1.41) were used to cover the range applicable to marine phytoplankton, relative to seawater's refractive index of 1.34. Carbon quotas were then estimated from ESD using the empirical equation: fgC cell\u207b\u00b9 = 0.261 \u00d7 Volume\u2070\u00b7\u2078\u2076\u2070, assuming spherical particles."
+  },
+  {
+    "p_id": "P061_C",
+    "answer": "Data files were flagged as outliers if stream pressure deviated by more than 5% from the mean value for a given cruise (indicating instrument instability), or if data acquisition exceeded 18,000 particles per second (corresponding to 200\u2013500 particles/second in the virtual core), at which point coincidence of particles becomes likely and affects data quality. The Chauvenet criterion was also applied to assess the quality of ESD, carbon quota, and cell abundance estimates, identifying statistical outliers as data points falling outside a probability band of 1 \u2013 1/(2N)."
+  },
+  {
+    "p_id": "P062_C",
+    "answer": "SeaFlow cell abundances compared well with measurements from a BD Influx flow cytometer across 17 cruises (n=201 paired samples, 603 data points for three phytoplankton groups). The overall correlation coefficient was R=0.92 with a regression slope of 0.91, and 74% of estimates showed less than a 2-fold difference between instruments. Only 3% of estimates showed 1\u20132 order of magnitude differences, which likely reflected natural variability (Prochlorococcus patchiness, for example) rather than instrument counting error."
+  },
+  {
+    "p_id": "P063_C",
+    "answer": "Trichodesmium spp. was the most abundant diazotroph in the Eastern Equatorial Atlantic in June 2007, with the highest nifH gene copy numbers found in the Gulf of Guinea. Trichodesmium also showed the highest nitrogenase gene transcript abundance overall, with maximum transcript abundances at stations along the equator and in waters influenced by the Congo River plume (over 10\u2075 cDNA nifH copies per liter)."
+  },
+  {
+    "p_id": "P064_C",
+    "answer": "The Foster et al. study was the first report of the Calothrix symbiont (het-3, which is a cyanobacterial endosymbiont of Chaetoceros diatoms) in the Atlantic Ocean. All previous reports of this symbiosis had been limited to the Pacific and Indian Oceans, making its detection in the Gulf of Guinea historically significant for understanding the global distribution of this diazotroph symbiosis."
+  },
+  {
+    "p_id": "P065_C",
+    "answer": "The distribution of diazotroph groups\u2014especially the three strains of symbiotic cyanobacteria\u2014was largely controlled by riverine inputs and upwelling. The Congo River plume and the equatorial upwelling system were the dominant environmental drivers structuring diazotroph distributions in the region, affecting salinity, temperature, nutrient concentrations, and CDOM levels that influenced which diazotroph groups were present and active."
+  },
+  {
+    "p_id": "P066_C",
+    "answer": "Despite low dissolved iron concentrations (~0.1 nmol/L) throughout the South Pacific gyre, primary productivity was only limited by iron at the border of the gyre, not in the center. The center of the gyre appeared to harbor phytoplankton populations acclimated to extreme oligotrophic conditions over long periods of seasonal stability, such that iron did not appear to limit growth even at these low concentrations."
+  },
+  {
+    "p_id": "P067_C",
+    "answer": "The South Pacific gyre was described as unique because despite clear evidence of nitrogen limitation in the central gyre, measurable dinitrogen fixation could not be detected even after iron and/or phosphate additions. Furthermore, cyanobacterial nifH gene abundances were extremely low compared to the North Pacific Gyre. This combination of nitrogen limitation without measurable N\u2082 fixation despite nutrient amendment was not previously reported, suggesting a community uniquely adapted to extreme oligotrophic conditions that does not compensate nitrogen limitation through fixation."
+  },
+  {
+    "p_id": "P068_C",
+    "answer": "The global diazotroph nifH qPCR database was derived from and modified upon the publicly available database of Tang et al. (2019, Geophysical Research Letters), which itself included the database compiled by Luo et al. (2012, Earth System Science Data). Key corrections made by Mary R. Gradoville and Kendra Turk-Kubo included fixing several errors in the Tang et al. database, modifying it to separate UCYN-A sublineages (unicellular nitrogen-fixing cyanobacteria), and adding explicit categorization to differentiate undetected, detected-but-not-quantified, and not-determined data points."
+  },
+  {
+    "p_id": "P069_C",
+    "answer": "The database explicitly distinguishes between three categories of outcomes: samples where the target nifH gene was 'undetected' (no amplification), samples where it was 'detected but not quantified' (below the quantification limit, given a nominal value of 1 nifH copy/L), and samples that were 'not determined' (not measured or no data available). This distinction is important for quantitative analyses because treating these categories the same would systematically bias abundance estimates and misrepresent the actual distribution and activity of diazotrophs."
+  }
+]

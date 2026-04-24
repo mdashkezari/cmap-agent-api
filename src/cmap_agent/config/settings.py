@@ -93,10 +93,66 @@ class Settings(BaseSettings):
     # Web search (optional)
     TAVILY_API_KEY: str | None = None
 
-    # RAG / Knowledge Base (Chroma)
-    CMAP_AGENT_CHROMA_DIR: str = "chroma"
+    # RAG / Knowledge Base
+    # Backend selector: "chroma" (legacy) or "qdrant" (hybrid search)
+    CMAP_AGENT_KB_BACKEND: str = "qdrant"
     CMAP_AGENT_KB_COLLECTION: str = "cmap_kb_v1"
-    CMAP_AGENT_KB_TOP_K: int = 8
+    # Top-K chunks returned by KB search.  Raised from 16 to 32 in v228
+    # based on the 108-query retrieval harness: hit rate at top-16 was
+    # 92.6%, at top-24 was 93.5%, at top-32 was 95.4%.  The top-32
+    # setting closes the full gap between "retrievable within scan
+    # depth 40" and "surfaced to the LLM."  Rescued queries are
+    # concentrated in the sequence_literal / numeric_threshold /
+    # numeric_count shape classes — exactly the factual-technical
+    # queries (primer sequences, minimum depth thresholds) where
+    # real-world agent failures were observed.  No harness regressions
+    # across any shape class or source paper.
+    CMAP_AGENT_KB_TOP_K: int = 32
+
+    # Reference bank PDF chunk size (chars).  Smaller chunks improve BM25
+    # term density — the target sentence dominates a 2000-char chunk but is
+    # diluted in a 7000-char chunk.  Dataset/variable docs are short enough
+    # that their 7000-char limit is rarely reached.
+    CMAP_AGENT_KB_REFBANK_CHUNK_SIZE: int = 2_000
+    CMAP_AGENT_KB_CATALOG_CHUNK_SIZE: int = 7_000
+
+    # ChromaDB settings (used when KB_BACKEND=chroma)
+    CMAP_AGENT_CHROMA_DIR: str = "chroma"
+
+    # Qdrant settings (used when KB_BACKEND=qdrant)
+    QDRANT_URL: str = "http://localhost:6333"
+    QDRANT_API_KEY: str | None = None
+    # Dense vector dimension (must match embedding model output)
+    QDRANT_DENSE_DIM: int = 1536
+    # Hybrid fusion method: "rrf" (Reciprocal Rank Fusion, default — fuses
+    # rank positions, insensitive to raw score magnitudes) or "dbsf"
+    # (Distribution-Based Score Fusion — normalizes the dense and sparse
+    # score distributions before adding them, which can help when the two
+    # channels operate at very different score scales).  This is a
+    # per-query tuning knob and does not require a KB rebuild; changing
+    # it only affects how retrieval candidates from the two channels
+    # are combined at query time.
+    QDRANT_FUSION: str = "rrf"
+    # Over-fetch factor per channel before fusion.  Qdrant fetches
+    # ``top_k * QDRANT_PREFETCH_FACTOR`` candidates from each of the
+    # dense and sparse channels before fusing them.  Larger values give
+    # fusion more to work with at the cost of a modestly slower query.
+    QDRANT_PREFETCH_FACTOR: int = 3
+    # Upsert batch size (number of points per single upsert request to
+    # Qdrant).  Smaller batches reduce the per-request payload sent to the
+    # cloud proxy, which can avoid 502 Bad Gateway responses on managed
+    # tiers that have proxy-level request-size or request-time limits.
+    # Larger batches reduce overhead on cleanly-behaved clusters.  The
+    # default of 64 matches the in-process value used through v225 and
+    # was measured working on Qdrant Cloud Starter tier with retry.
+    QDRANT_UPSERT_BATCH_SIZE: int = 64
+    # Maximum retry attempts on transient proxy-layer errors (502/503/504)
+    # during upsert.  The client retries with exponential backoff
+    # (1s, 2s, 4s, 8s, 16s, capped at 30s) between attempts.  Terminal
+    # failures after all retries are re-raised so the caller can abort.
+    # Set to 0 to disable retry entirely (not recommended — see the v202
+    # cutover notes on Qdrant Cloud proxy behaviour during bulk ingestion).
+    QDRANT_UPSERT_MAX_RETRIES: int = 5
 
     # Embeddings (used for KB build + retrieval)
     CMAP_EMBEDDINGS_PROVIDER: str = "openai"  # openai

@@ -6,6 +6,9 @@ env/
 .env.*
 
 chroma
+chroma_db
+qdrant_data
+qdrant_storage
 
 __pycache__/
 *.pyc

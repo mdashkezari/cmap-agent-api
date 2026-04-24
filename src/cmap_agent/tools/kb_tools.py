@@ -1,13 +1,13 @@
 from __future__ import annotations
 from pydantic import BaseModel, Field
-from cmap_agent.rag.chroma_kb import ChromaKB
+from cmap_agent.rag.retrieval import get_kb
 
 class KBSearchArgs(BaseModel):
     query: str = Field(..., description="Semantic search query")
     limit: int = Field(8, ge=1, le=25, description="Number of KB chunks to return")
 
 def kb_search(args: KBSearchArgs, ctx: dict) -> dict:
-    kb = ChromaKB()
+    kb = get_kb()
     hits = kb.query(args.query, k=args.limit)
     # Return compact results
     results=[]

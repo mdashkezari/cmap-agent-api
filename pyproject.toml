@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "cmap-agent"
-version = "0.2.78"
+version = "0.3.15"
 description = "Agentic interface for Simons CMAP (tool-calling + pycmap + custom plotting)"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -27,6 +27,8 @@ dependencies = [
     "openai>=1.40.0",
     "anthropic>=0.35.0",
     "chromadb>=0.5.5",
+    "qdrant-client>=1.12.0",
+    "fastembed>=0.4.0",
     "langgraph>=0.2.0",
     "cartopy>=0.22",
     "pyproj>=3.6",
@@ -44,6 +46,7 @@ server = [
 openai = ["openai>=1.40.0"]
 anthropic = ["anthropic>=0.35.0"]
 retrieval = ["chromadb>=0.5.0"]
+qdrant = ["qdrant-client>=1.12.0", "fastembed>=0.4.0"]
 geo = [
   # Recommend installing via conda-forge for reliability (GDAL/PROJ/CARTOPY stack).
   "cartopy>=0.22; platform_system!='Windows'",
